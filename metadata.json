@@ -1,0 +1,5 @@
+{
+  "name": "Moongcook Analytics",
+  "description": "Tablero gerencial de analítica para restaurantes basado en datos de POS Toteat.",
+  "requestFramePermissions": []
+}
