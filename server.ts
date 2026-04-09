@@ -330,8 +330,58 @@ async function startServer() {
     app.use(express.static("dist"));
   }
 
+  // ── Auto-sync from Toteat ─────────────────────────────────────────
+  // Keeps the local DB in sync with Toteat without manual intervention.
+  // Strategy: find the last date already imported, then re-import from
+  // (lastDate - 2 days) up to today. The 2-day overlap covers late-arriving
+  // orders that closed after a previous sync. clearExisting is scoped to
+  // exactly that window so older data is never touched.
+  async function autoSyncToteat() {
+    try {
+      const row = db.prepare('SELECT MAX(date) as lastDate FROM sales_data').get() as { lastDate: string | null };
+      const today = new Date().toISOString().slice(0, 10);
+
+      let startDate: string;
+      if (row?.lastDate) {
+        const d = new Date(row.lastDate);
+        d.setDate(d.getDate() - 2); // re-import last 2 days to catch late orders
+        startDate = d.toISOString().slice(0, 10);
+      } else {
+        // Empty DB: pull the last 30 days as a sensible first run
+        const d = new Date();
+        d.setDate(d.getDate() - 30);
+        startDate = d.toISOString().slice(0, 10);
+      }
+
+      if (startDate > today) return;
+
+      console.log(`[auto-sync] Importing Toteat ${startDate} → ${today}`);
+      const config = getToteatConfig();
+      const sales = await importToteatSales(config, startDate, today);
+
+      const clearStmt = db.prepare('DELETE FROM sales_data WHERE date BETWEEN ? AND ?');
+      const insert = db.prepare(`
+        INSERT INTO sales_data (date, product_name, family, channel, quantity, total_price, total_cost, is_personal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const tx = db.transaction((rows: typeof sales) => {
+        clearStmt.run(startDate, today);
+        for (const r of rows) {
+          insert.run(r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_cost, r.is_personal);
+        }
+      });
+      tx(sales);
+      console.log(`[auto-sync] Done. ${sales.length} rows imported.`);
+    } catch (err: any) {
+      console.error('[auto-sync] Failed:', err.message || err);
+    }
+  }
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    // Run once on startup, then every 6 hours
+    autoSyncToteat();
+    setInterval(autoSyncToteat, 6 * 60 * 60 * 1000);
   });
 }
 
