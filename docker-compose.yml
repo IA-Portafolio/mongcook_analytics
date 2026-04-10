@@ -1,0 +1,24 @@
+services:
+  mongcook:
+    build: .
+    container_name: mongcook-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    env_file:
+      - .env
+    volumes:
+      - ./moongcook.db:/app/moongcook.db
+    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mongcook.rule=Host(`moongcook.iaportafolio.com`)"
+      - "traefik.http.routers.mongcook.entrypoints=websecure"
+      - "traefik.http.routers.mongcook.tls.certresolver=letsencrypt"
+      - "traefik.http.services.mongcook.loadbalancer.server.port=3000"
+
+networks:
+  traefik-public:
+    external: true
