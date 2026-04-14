@@ -93,59 +93,51 @@ export interface NormalizedSale {
 // Maps Toteat hierarchyId to our analytics families.
 // This is the primary classification — product-level overrides below.
 
+// Canonical families: Combos, Cajas, Platos Especiales, Bowl, Otros.
+// Chow Fan / Chow Suey / Chow Mein / Arma tu Plato / Mong Express / Lo Nuevo
+// are DISHES inside "Platos Especiales", not families of their own.
+// Entradas / Bebidas / Adicionales fold into "Otros".
 const HIERARCHY_MAP: Record<string, ProductMapping> = {
-  // Entradas
-  'AB.010': { family: 'Entradas', type: 'Complemento' },
+  // Otros (entradas, bebidas, adicionales)
+  'AB.010': { family: 'Otros', type: 'Complemento' },
 
-  // Platos Especiales (Personal)
+  // Platos Especiales
   'AB.020': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030040': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030050': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030055': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030060': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030070': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030075': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030080': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030085': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030090': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030100': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.030210': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.110': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.140': { family: 'Platos Especiales', type: 'Personal' },
+  'AB.250': { family: 'Platos Especiales', type: 'Personal' },
 
-  // Chow Fan variants (Personal = personal size, Compartir = trio/familiar/mega)
-  'AB.030040': { family: 'Chow Fan', type: 'Personal' },
-  'AB.030050': { family: 'Chow Fan', type: 'Personal' },
-  'AB.030055': { family: 'Chow Fan', type: 'Personal' },
-  'AB.030060': { family: 'Chow Fan', type: 'Personal' },
-  'AB.030070': { family: 'Chow Suey', type: 'Personal' },
-  'AB.030075': { family: 'Chow Suey', type: 'Personal' },
-  'AB.030080': { family: 'Chow Suey', type: 'Personal' },
-  'AB.030085': { family: 'Chow Suey', type: 'Personal' },
-  'AB.030090': { family: 'Chow Mein', type: 'Personal' },
-  'AB.030100': { family: 'Chow Mein', type: 'Personal' },
-  'AB.030210': { family: 'Chow Fan', type: 'Personal' },
+  // Adicionales / Bebidas → Otros
+  'AB.120': { family: 'Otros', type: 'Complemento' },
+  'AB.130': { family: 'Otros', type: 'Complemento' },
 
-  // Arma tu plato
-  'AB.110': { family: 'Arma tu Plato', type: 'Personal' },
-
-  // Adicionales
-  'AB.120': { family: 'Adicionales', type: 'Complemento' },
-
-  // Bebidas
-  'AB.130': { family: 'Bebidas', type: 'Complemento' },
-
-  // Mong Express
-  'AB.140': { family: 'Mong Express', type: 'Personal' },
-
-  // Combos para compartir
+  // Combos
   'AB.145': { family: 'Combos', type: 'Compartir' },
-
-  // Combos personales
   'AB.160': { family: 'Combos', type: 'Personal' },
 
-  // Lo nuevo imperdible
-  'AB.250': { family: 'Lo Nuevo', type: 'Personal' },
+  // Bowl
+  'AB.255': { family: 'Bowl', type: 'Personal' },
 
-  // Bowls
-  'AB.255': { family: 'Bowls', type: 'Personal' },
-
-  // Modifiers (extras selected within combos — classify as Adicionales)
-  'BA.500': { family: 'Adicionales', type: 'Complemento' },
-  'BA.510': { family: 'Adicionales', type: 'Complemento' },
-  'BA.550': { family: 'Adicionales', type: 'Complemento' },
-  'BA.560': { family: 'Bebidas', type: 'Complemento' },
-  'BA.570': { family: 'Adicionales', type: 'Complemento' },
-  'BA.580': { family: 'Bebidas', type: 'Complemento' },
-  'BA.590': { family: 'Adicionales', type: 'Complemento' },
-  'BA.610': { family: 'Adicionales', type: 'Complemento' },
+  // Modifiers (extras selected within combos) → Otros
+  'BA.500': { family: 'Otros', type: 'Complemento' },
+  'BA.510': { family: 'Otros', type: 'Complemento' },
+  'BA.550': { family: 'Otros', type: 'Complemento' },
+  'BA.560': { family: 'Otros', type: 'Complemento' },
+  'BA.570': { family: 'Otros', type: 'Complemento' },
+  'BA.580': { family: 'Otros', type: 'Complemento' },
+  'BA.590': { family: 'Otros', type: 'Complemento' },
+  'BA.610': { family: 'Otros', type: 'Complemento' },
 };
 
 // ── Product-level overrides ──────────────────────────────────────────
@@ -153,24 +145,20 @@ const HIERARCHY_MAP: Record<string, ProductMapping> = {
 // e.g. trio/familiar/mega sizes are "Compartir" even if hierarchy says personal.
 
 export const PRODUCT_MAP: Record<string, ProductMapping> = {
-  // Chow Fan — trio/familiar/mega → Compartir
-  'MON101': { family: 'Chow Fan', type: 'Compartir' },
-  'MON102': { family: 'Chow Fan', type: 'Compartir' },
-  'MON103': { family: 'Chow Fan', type: 'Compartir' },
-  'MON111': { family: 'Chow Fan', type: 'Compartir' },
-  'MON121': { family: 'Chow Fan', type: 'Compartir' },
-  'MON131': { family: 'Chow Fan', type: 'Compartir' },
-  'MON132': { family: 'Chow Fan', type: 'Compartir' },
-  'MON133': { family: 'Chow Fan', type: 'Compartir' },
-
-  // Chow Suey — trio/familiar → Compartir
-  'MON301': { family: 'Chow Suey', type: 'Compartir' },
-  'MON302': { family: 'Chow Suey', type: 'Compartir' },
-  'MON321': { family: 'Chow Suey', type: 'Compartir' },
-
-  // Lo nuevo imperdible — trio/familiar are Compartir
-  'RAPP01': { family: 'Lo Nuevo', type: 'Compartir' },
-  'RAPP03': { family: 'Lo Nuevo', type: 'Compartir' },
+  // Platos especiales — trio/familiar/mega sizes → Compartir
+  'MON101': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON102': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON103': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON111': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON121': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON131': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON132': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON133': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON301': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON302': { family: 'Platos Especiales', type: 'Compartir' },
+  'MON321': { family: 'Platos Especiales', type: 'Compartir' },
+  'RAPP01': { family: 'Platos Especiales', type: 'Compartir' },
+  'RAPP03': { family: 'Platos Especiales', type: 'Compartir' },
 
   // Combos para compartir items that might land in wrong hierarchy
   'ATP01': { family: 'Combos', type: 'Compartir' },
@@ -215,15 +203,22 @@ function classifyProduct(product: ToteatProduct, customMap?: Record<string, Prod
 
   // 3. Fallback: try to guess from hierarchy name
   const hname = (product.hierarchyName || '').toLowerCase();
-  if (hname.includes('entrada')) return { family: 'Entradas', type: 'Complemento' };
-  if (hname.includes('bebida')) return { family: 'Bebidas', type: 'Complemento' };
-  if (hname.includes('adicional')) return { family: 'Adicionales', type: 'Complemento' };
-  if (hname.includes('bowl')) return { family: 'Bowls', type: 'Personal' };
+  const pname = (product.name || '').toLowerCase();
+  if (hname.includes('caja') || pname.includes('caja')) return { family: 'Cajas', type: 'Compartir' };
+  if (hname.includes('bowl') || pname.startsWith('bowl')) return { family: 'Bowl', type: 'Personal' };
   if (hname.includes('combo') && hname.includes('compartir')) return { family: 'Combos', type: 'Compartir' };
   if (hname.includes('combo') && hname.includes('personal')) return { family: 'Combos', type: 'Personal' };
+  if (hname.includes('combo') || pname.startsWith('combo')) return { family: 'Combos', type: 'Personal' };
+  if (hname.includes('entrada') || hname.includes('bebida') || hname.includes('adicional')) {
+    return { family: 'Otros', type: 'Complemento' };
+  }
+  if (hname.includes('plato') || hname.includes('chow') || hname.includes('especial') ||
+      hname.includes('mong') || hname.includes('arma')) {
+    return { family: 'Platos Especiales', type: 'Personal' };
+  }
 
   // 4. Default
-  return { family: 'Otros', type: 'Personal' };
+  return { family: 'Otros', type: 'Complemento' };
 }
 
 // ── API Client ───────────────────────────────────────────────────────

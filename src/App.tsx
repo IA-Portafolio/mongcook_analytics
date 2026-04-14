@@ -15,6 +15,7 @@ import {
   Upload,
   Database,
   ChevronRight,
+  ChevronLeft,
   ChevronDown,
   DollarSign,
   Package,
@@ -107,6 +108,15 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('sidebarCollapsed') === '1';
+  });
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('sidebarCollapsed', sidebarCollapsed ? '1' : '0');
+    }
+  }, [sidebarCollapsed]);
   const [filters, setFilters] = useState<FilterState>({
     startDate: '',
     endDate: '',
@@ -262,12 +272,35 @@ export default function App() {
       </AnimatePresence>
 
       {/* Desktop Sidebar */}
-      <aside className="fixed left-0 top-0 h-full w-64 border-r border-[#272121]/15 bg-[#272121] text-[#d1d0d1] z-50 hidden md:block">
-        {sidebarContent}
+      <aside
+        className={cn(
+          "fixed left-0 top-0 h-full border-r border-[#272121]/15 bg-[#272121] text-[#d1d0d1] z-50 hidden md:block transition-all duration-300 ease-in-out overflow-hidden",
+          sidebarCollapsed ? "w-0 border-r-0" : "w-64"
+        )}
+      >
+        <div className="w-64 h-full">{sidebarContent}</div>
       </aside>
 
+      {/* Desktop Sidebar Toggle */}
+      <button
+        onClick={() => setSidebarCollapsed(prev => !prev)}
+        aria-label={sidebarCollapsed ? "Mostrar menú" : "Ocultar menú"}
+        title={sidebarCollapsed ? "Mostrar menú" : "Ocultar menú"}
+        className={cn(
+          "hidden md:flex fixed top-4 z-[55] h-9 w-9 items-center justify-center rounded-full bg-[#272121] text-[#d1d0d1] shadow-lg hover:bg-[#ff0024] transition-all duration-300",
+          sidebarCollapsed ? "left-4" : "left-[17rem]"
+        )}
+      >
+        {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+      </button>
+
       {/* Main Content */}
-      <main className="md:ml-64 p-6 md:p-8 pt-20 md:pt-8">
+      <main
+        className={cn(
+          "p-6 md:p-8 pt-20 md:pt-8 transition-all duration-300 ease-in-out",
+          sidebarCollapsed ? "md:ml-0 md:pl-16" : "md:ml-64"
+        )}
+      >
         {/* Header */}
         <header className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
           <div>

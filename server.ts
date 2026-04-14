@@ -14,6 +14,33 @@ async function startServer() {
     res.json({ status: "ok", db: "connected" });
   });
 
+  // Normalize legacy family names in the DB into the 5 canonical families:
+  // Combos, Cajas, Platos Especiales, Bowl, Otros.
+  // Runs once at startup and is exposed as an endpoint for manual re-run.
+  function normalizeFamilies() {
+    const run = db.transaction(() => {
+      // Combos: any legacy singular/plural variant
+      db.prepare("UPDATE sales_data SET family='Combos' WHERE family IN ('Combo','combos','combo')").run();
+      // Cajas: legacy singular → plural canonical
+      db.prepare("UPDATE sales_data SET family='Cajas' WHERE family IN ('Caja','cajas','caja')").run();
+      // Bowl: drop the 's'
+      db.prepare("UPDATE sales_data SET family='Bowl' WHERE family IN ('Bowls','bowl','bowls')").run();
+      // Platos Especiales: fold Chow Fan/Suey/Mein + Arma tu Plato + Mong Express + Lo Nuevo
+      db.prepare(`UPDATE sales_data SET family='Platos Especiales'
+        WHERE family IN ('Chow Fan','Chow Suey','Chow Mein','Arma tu Plato','Mong Express','Lo Nuevo','platos especiales')`).run();
+      // Otros: fold Entradas/Bebidas/Adicionales and the singular 'Otro'
+      db.prepare("UPDATE sales_data SET family='Otros' WHERE family IN ('Otro','Entradas','Bebidas','Adicionales','otros','otro')").run();
+    });
+    run();
+  }
+  normalizeFamilies();
+
+  app.post("/api/data/normalize-families", (_req, res) => {
+    normalizeFamilies();
+    const summary = db.prepare('SELECT family, COUNT(*) as rows, SUM(total_price) as sales FROM sales_data GROUP BY family ORDER BY sales DESC').all();
+    res.json({ ok: true, families: summary });
+  });
+
   // Get Summary Metrics
   app.get("/api/metrics/summary", (req, res) => {
     const { startDate, endDate, families } = req.query;
@@ -151,25 +178,23 @@ async function startServer() {
     `);
 
     // Main dish families (have personal/no-personal distinction)
-    const mainFamilies = ['Bowls', 'Combos', 'Platos Especiales', 'Cajas'];
-    // Complement families (no personal/no-personal distinction, is_personal = -1)
-    const complementFamilies = ['Entradas', 'Adicionales', 'Bebidas'];
+    const mainFamilies = ['Bowl', 'Combos', 'Platos Especiales', 'Cajas'];
+    // Complement family (is_personal = -1)
+    const complementFamilies = ['Otros'];
     const channels = ['Punto de Venta', 'Delivery Propio', 'Rappi'];
     const dates = ['2024-02-17', '2024-02-18', '2024-02-19', '2024-02-20', '2024-02-21'];
 
     const products: Record<string, string[]> = {
-      'Bowls': ['Bowl Pollo', 'Bowl Veggie', 'Bowl Teriyaki'],
+      'Bowl': ['Bowl Pollo', 'Bowl Veggie', 'Bowl Teriyaki'],
       'Combos': ['Combo Familiar', 'Combo Duo', 'Combo Individual'],
-      'Platos Especiales': ['Rappi Especial', 'Plato del Día', 'Chef Special'],
+      'Platos Especiales': ['Chow Fan Pollo', 'Chow Suey Especial', 'Chow Mein Camarón', 'Arroz Valenciano'],
       'Cajas': ['Caja Moong', 'Caja Sorpresa', 'Caja Premium'],
-      'Entradas': ['Rollito Primavera', 'Wantán Frito', 'Edamame', 'Gyoza'],
-      'Adicionales': ['Arroz Extra', 'Salsa Teriyaki', 'Topping Huevo', 'Kimchi'],
-      'Bebidas': ['Té Helado', 'Limonada Jengibre', 'Agua Mineral', 'Bebida Lata'],
+      'Otros': ['Rollito Primavera', 'Gyoza', 'Té Helado', 'Bebida Lata', 'Salsa Teriyaki'],
     };
 
     const unitPrices: Record<string, number> = {
-      'Bowls': 6500, 'Combos': 12500, 'Platos Especiales': 9800, 'Cajas': 8200,
-      'Entradas': 3500, 'Adicionales': 2200, 'Bebidas': 1800,
+      'Bowl': 6500, 'Combos': 12500, 'Platos Especiales': 9800, 'Cajas': 8200,
+      'Otros': 2500,
     };
 
     const mockData: [string, string, string, string, number, number, number, number][] = [];
