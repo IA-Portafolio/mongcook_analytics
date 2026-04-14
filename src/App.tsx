@@ -28,13 +28,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { KpiSummary, ComparativeData, ChannelData, FilterState } from './types';
 import { formatCurrency, formatPercent, cn, safeDivide } from './lib/utils';
 
-const ALL_FAMILIES = ['Caja', 'Bowl', 'Platos Especiales', 'Combo', 'Otro'];
-const COMPLEMENT_FAMILIES = ['Otro'];
-const MAIN_FAMILIES = ['Caja', 'Bowl', 'Platos Especiales', 'Combo'];
 const CHANNEL_COLORS: Record<string, string> = {
   'Punto de Venta': '#272121',
   'Delivery Propio': '#ff0024',
-  'Rappi': '#abf300',
+  'Rappi': '#1e3a5f',
 };
 
 // Platform commissions per channel (percentage of sales)
@@ -117,6 +114,7 @@ export default function App() {
   });
   const { toasts, show: showToast } = useToast();
   const hasData = summary && (summary.totalSales || summary.totalQuantity);
+  const availableFamilies = [...new Set([...compData.map(d => d.family), ...channelData.map(d => d.family)])].sort();
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -214,7 +212,7 @@ export default function App() {
       {/* Sidebar footer with status */}
       <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-white/10 space-y-3">
         <div className="flex items-center gap-2">
-          <div className={cn("w-2 h-2 rounded-full", hasData ? "bg-[#abf300]" : "bg-[#fcec0e]")} />
+          <div className={cn("w-2 h-2 rounded-full", hasData ? "bg-emerald-400" : "bg-[#fcec0e]")} />
           <span className="text-[11px] opacity-50">
             {hasData ? "Datos cargados" : "Sin datos"}
           </span>
@@ -349,7 +347,7 @@ export default function App() {
                         className="bg-transparent border border-[#272121]/20 rounded-lg px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-[#ff0024] transition-colors appearance-none pr-7 cursor-pointer"
                       >
                         <option value="">{filters.families.length === 0 ? 'Ver todo' : 'Agregar familia...'}</option>
-                        {ALL_FAMILIES.filter(f => !filters.families.includes(f)).map(family => (
+                        {availableFamilies.filter(f => !filters.families.includes(f)).map(family => (
                           <option key={family} value={family}>{family}</option>
                         ))}
                       </select>
@@ -499,7 +497,7 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
           <h3 className="font-bold text-xl mb-6">Distribución por Familia</h3>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={Object.values(compData.filter(d => ['Caja', 'Bowl', 'Platos Especiales', 'Combo', 'Otro'].includes(d.family)).reduce((acc, d) => { if (!acc[d.family]) acc[d.family] = { family: d.family, sales: 0 }; acc[d.family].sales += d.sales; return acc; }, {} as Record<string, { family: string; sales: number }>)).sort((a, b) => a.sales - b.sales)} barSize={40}>
+              <BarChart data={Object.values(compData.reduce((acc, d) => { if (!acc[d.family]) acc[d.family] = { family: d.family, sales: 0 }; acc[d.family].sales += d.sales; return acc; }, {} as Record<string, { family: string; sales: number }>)).sort((a, b) => a.sales - b.sales)} barSize={40}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
                 <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
                 <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
@@ -521,12 +519,15 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
           {(() => {
             const personalSales = compData.filter(d => d.is_personal === 1).reduce((acc, curr) => acc + curr.sales, 0);
             const compartirSales = compData.filter(d => d.is_personal === 0).reduce((acc, curr) => acc + curr.sales, 0);
-            const total = personalSales + compartirSales;
+            const otrosSales = compData.filter(d => d.is_personal === -1).reduce((acc, curr) => acc + curr.sales, 0);
+            const total = personalSales + compartirSales + otrosSales;
             const personalPct = safeDivide(personalSales, total);
             const compartirPct = safeDivide(compartirSales, total);
+            const otrosPct = safeDivide(otrosSales, total);
             const pieData = [
               { name: 'Personal', value: personalSales },
               { name: 'Para Compartir', value: compartirSales },
+              ...(otrosSales > 0 ? [{ name: 'Complementos', value: otrosSales }] : []),
             ];
 
             return (
@@ -544,6 +545,7 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                       >
                         <Cell fill="#272121" />
                         <Cell fill="#ff0024" />
+                        {otrosSales > 0 && <Cell fill="#64748b" />}
                       </Pie>
                       <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
                     </PieChart>
@@ -570,6 +572,18 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                       <span className="font-mono text-xs font-bold bg-[#ff0024] text-white px-2 py-0.5 rounded">{formatPercent(compartirPct)}</span>
                     </div>
                   </div>
+                  {otrosSales > 0 && (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full bg-[#64748b]" />
+                        <span className="text-sm">Complementos</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-sm font-bold">{formatCurrency(otrosSales)}</span>
+                        <span className="font-mono text-xs font-bold bg-[#64748b] text-white px-2 py-0.5 rounded">{formatPercent(otrosPct)}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             );
@@ -613,7 +627,7 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="font-mono text-sm font-bold">{formatCurrency(ch.sales)}</span>
-                            <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: color, color: ['#abf300', '#fcec0e', '#d1d0d1'].includes(color) ? '#272121' : '#fff' }}>
+                            <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded" style={{ backgroundColor: color, color: ['#fcec0e', '#d1d0d1'].includes(color) ? '#272121' : '#fff' }}>
                               {formatPercent(pct)}
                             </span>
                           </div>
@@ -639,8 +653,9 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
 
       {/* Top Producto por Familia */}
       {productData.length > 0 && (() => {
-        const families = ['Caja', 'Bowl', 'Platos Especiales', 'Combo', 'Otro'];
-        const familyColors: Record<string, string> = { 'Caja': '#272121', 'Bowl': '#4a9eff', 'Platos Especiales': '#ff0024', 'Combo': '#abf300', 'Otro': '#fcec0e' };
+        const families = [...new Set(productData.map(d => d.family))];
+        const familyColorPalette = ['#272121', '#4a9eff', '#ff0024', '#1e3a5f', '#fcec0e', '#e85d75', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#64748b', '#0ea5e9'];
+        const familyColors: Record<string, string> = Object.fromEntries(families.map((f, i) => [f, familyColorPalette[i % familyColorPalette.length]]));
         const topByFamily = families.map(family => {
           const products = aggregateProducts(productData.filter(d => d.family === family));
           const totalFamilySales = products.reduce((a, c) => a + c.sales, 0);
@@ -736,8 +751,7 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
   const totalCost = data.reduce((a, c) => a + c.cost, 0);
   const avgMargin = safeDivide(totalSales - totalCost, totalSales);
 
-  const COMPARATIVE_FAMILIES = ['Caja', 'Platos Especiales', 'Combo'];
-  const families = [...new Set(data.map(d => d.family))].filter(f => COMPARATIVE_FAMILIES.includes(f));
+  const families = [...new Set(data.filter(d => d.is_personal !== -1).map(d => d.family))];
   const chartData = families.map(family => {
     const p = personal.find(d => d.family === family);
     const np = nonPersonal.find(d => d.family === family);
@@ -1066,7 +1080,7 @@ function TypePanel({ title, data, accentColor, fullWidth }: { title: string, dat
   };
 
   const pieData = sorted.map(r => ({ name: r.family, value: r.sales }));
-  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#abf300', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#a3e635', '#64748b'];
+  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#1e3a5f', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#64748b', '#0ea5e9'];
 
   const tableContent = (
     <div className="bg-white/50 border border-[#272121]/10 rounded-2xl overflow-hidden backdrop-blur-sm">
@@ -1326,12 +1340,12 @@ function ChannelView({ data }: { data: ChannelData[] }) {
         })}
       </div>
 
-      {/* Grouped Bar Chart */}
+      {/* Bar Chart — Sales by Family */}
       <div className="bg-white/50 border border-[#272121]/10 rounded-2xl p-6 backdrop-blur-sm">
-        <h3 className="font-bold text-xl mb-6">Ventas por Familia — Por Canal</h3>
+        <h3 className="font-bold text-xl mb-6">Ventas por Familia</h3>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} barGap={3}>
+            <BarChart data={chartData.map(d => ({ family: d.family, sales: d._total }))} barSize={40}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
               <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
               <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
@@ -1340,10 +1354,9 @@ function ChannelView({ data }: { data: ChannelData[] }) {
                 contentStyle={tooltipStyle}
                 formatter={(value: number) => formatCurrency(value)}
               />
-              <Legend />
-              {channels.map(ch => (
-                <Bar key={ch} dataKey={ch} fill={CHANNEL_COLORS[ch] || '#999'} radius={[6, 6, 0, 0]} />
-              ))}
+              <Bar dataKey="sales" fill="#272121" radius={[6, 6, 0, 0]}>
+                <LabelList dataKey="sales" position="top" fontSize={10} fill="#272121" opacity={0.5} formatter={(v: number) => formatCompact(v)} />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1464,8 +1477,8 @@ function ChannelView({ data }: { data: ChannelData[] }) {
           const channelSales = rows.reduce((a, c) => a + c.sales, 0);
           const maxSales = Math.max(...rows.map(r => r.sales));
 
-          // Ensure all 5 families are present
-          const allFamilies = ['Caja', 'Bowl', 'Platos Especiales', 'Combo', 'Otro'];
+          // Ensure all families are present
+          const allFamilies = [...new Set(data.map(d => d.family))];
           const fullRows = allFamilies.map(family => {
             const existing = rows.find(r => r.family === family);
             return existing || { channel, family, quantity: 0, sales: 0, cost: 0 };
@@ -1481,7 +1494,7 @@ function ChannelView({ data }: { data: ChannelData[] }) {
 
           // Pie data for sales distribution
           const pieData = enriched.map(r => ({ name: r.family, value: r.sales }));
-          const pieColors = ['#272121', '#ff0024', '#fcec0e', '#abf300', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#a3e635', '#64748b'];
+          const pieColors = ['#272121', '#ff0024', '#fcec0e', '#1e3a5f', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#64748b', '#0ea5e9'];
 
           return (
             <div key={channel} className="bg-white/50 border border-[#272121]/10 rounded-2xl overflow-hidden backdrop-blur-sm">
@@ -1553,7 +1566,7 @@ function ChannelView({ data }: { data: ChannelData[] }) {
                           animate={{ width: `${row.marginPct * 100}%` }}
                           transition={{ duration: 0.6, delay: i * 0.1 }}
                           className="h-full rounded-full"
-                          style={{ backgroundColor: '#059669' }}
+                          style={{ backgroundColor: '#1e3a5f' }}
                         />
                         <span className="absolute inset-0 flex items-center justify-center text-[10px] font-mono font-bold" style={{ color: row.marginPct > 0.45 ? '#fff' : '#272121' }}>
                           {formatPercent(row.marginPct)}
@@ -1604,7 +1617,7 @@ function ChannelDetailPanel({ channel, data, allData }: { channel: string, data:
   }).sort((a, b) => b.sales - a.sales);
 
   const pieData = enriched.map(r => ({ name: r.family, value: r.sales }));
-  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#abf300', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#a3e635', '#64748b'];
+  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#1e3a5f', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#64748b', '#0ea5e9'];
 
   return (
     <div className="space-y-8">
@@ -1775,7 +1788,7 @@ function ChannelDetailPanel({ channel, data, allData }: { channel: string, data:
                     animate={{ width: `${row.marginPct * 100}%` }}
                     transition={{ duration: 0.6, delay: i * 0.1 }}
                     className="h-full rounded-full"
-                    style={{ backgroundColor: '#059669' }}
+                    style={{ backgroundColor: '#1e3a5f' }}
                   />
                   <span className="absolute inset-0 flex items-center justify-center text-[11px] font-mono font-bold" style={{ color: row.marginPct > 0.45 ? '#fff' : '#272121' }}>
                     {formatPercent(row.marginPct)}
@@ -1816,8 +1829,12 @@ function aggregateProducts(rows: ProductRow[]) {
 }
 
 function ProductView({ data }: { data: ProductRow[] }) {
-  const [selectedFamily, setSelectedFamily] = useState<string>('Caja');
-  const families = ['Caja', 'Bowl', 'Platos Especiales', 'Combo', 'Otro'];
+  const families = [...new Set(data.map(d => d.family))].sort((a, b) => {
+    const aSales = data.filter(d => d.family === a).reduce((s, d) => s + d.sales, 0);
+    const bSales = data.filter(d => d.family === b).reduce((s, d) => s + d.sales, 0);
+    return bSales - aSales;
+  });
+  const [selectedFamily, setSelectedFamily] = useState<string>(families[0] || '');
 
   const familyData = data.filter(d => d.family === selectedFamily);
   const byProduct = aggregateProducts(familyData);
@@ -1836,7 +1853,7 @@ function ProductView({ data }: { data: ProductRow[] }) {
     return entry;
   });
 
-  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#abf300', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#a3e635', '#64748b'];
+  const pieColors = ['#272121', '#ff0024', '#fcec0e', '#1e3a5f', '#e85d75', '#4a9eff', '#ff8c42', '#7c5cbf', '#2dd4bf', '#f472b6', '#64748b', '#0ea5e9'];
   const tooltipStyle = { backgroundColor: 'rgba(39,33,33,0.95)', border: 'none', borderRadius: '12px', color: '#d1d0d1', fontSize: '12px', fontFamily: 'JetBrains Mono, monospace' };
 
   return (
@@ -2008,7 +2025,7 @@ function ProductView({ data }: { data: ProductRow[] }) {
                       <div className="flex items-center justify-end gap-2">
                         <span className="font-mono text-[11px] font-bold">{formatPercent(marginPct)}</span>
                         <div className="w-12 h-2 bg-black/5 rounded-full overflow-hidden">
-                          <div className="h-full rounded-full" style={{ width: `${marginPct * 100}%`, backgroundColor: '#059669' }} />
+                          <div className="h-full rounded-full" style={{ width: `${marginPct * 100}%`, backgroundColor: '#1e3a5f' }} />
                         </div>
                       </div>
                     </td>
