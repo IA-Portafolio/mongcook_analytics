@@ -250,7 +250,17 @@ export async function fetchToteatSales(
   url.searchParams.set('ini', toToteatDate(startDate));
   url.searchParams.set('end', toToteatDate(endDate));
 
-  const response = await fetch(url.toString(), { method: 'GET' });
+  let response = await fetch(url.toString(), { method: 'GET' });
+
+  // Retry on 429 with backoff (Toteat enforces 3 req/min).
+  let attempts = 0;
+  while (response.status === 429 && attempts < 4) {
+    const waitMs = 25000 * (attempts + 1);
+    console.warn(`[toteat] 429 rate-limited, waiting ${waitMs / 1000}s (attempt ${attempts + 1}/4)`);
+    await new Promise(r => setTimeout(r, waitMs));
+    response = await fetch(url.toString(), { method: 'GET' });
+    attempts++;
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
@@ -296,9 +306,9 @@ export async function fetchToteatSalesChunked(
     chunkStart = new Date(chunkEnd);
     chunkStart.setDate(chunkStart.getDate() + 1);
 
-    // Rate limit: wait 1s between chunks to stay under 3 req/min
+    // Rate limit: Toteat allows 3 requests per minute → wait 21s between chunks
     if (chunkStart <= end) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 21000));
     }
   }
 
@@ -323,15 +333,16 @@ export function normalizeSales(
 
       const mapping = classifyProduct(product, customMap);
 
+      const discount = product.discounts || 0;
       results.push({
         date,
         product_name: product.name,
         family: mapping.family,
         channel,
         quantity: product.quantity,
-        total_price: product.netPrice + product.taxes, // gross price
+        total_price: product.netPrice + product.taxes - Math.abs(discount), // gross price net of discounts
         total_cost: product.totalCost,
-        total_discount: product.discounts || 0,
+        total_discount: Math.abs(discount),
         is_personal: mapping.type === 'Personal' ? 1 : mapping.type === 'Compartir' ? 0 : -1,
       });
     }
