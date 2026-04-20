@@ -86,6 +86,7 @@ export interface NormalizedSale {
   quantity: number;
   total_price: number;
   total_cost: number;
+  total_discount: number;
   is_personal: number; // 1 = Personal, 0 = Compartir, -1 = Complemento (no aplica)
 }
 
@@ -330,6 +331,7 @@ export function normalizeSales(
         quantity: product.quantity,
         total_price: product.netPrice + product.taxes, // gross price
         total_cost: product.totalCost,
+        total_discount: product.discounts || 0,
         is_personal: mapping.type === 'Personal' ? 1 : mapping.type === 'Compartir' ? 0 : -1,
       });
     }

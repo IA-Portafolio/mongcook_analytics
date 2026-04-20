@@ -15,6 +15,7 @@ export interface KpiSummary {
   totalCost: number;
   totalQuantity: number;
   totalMargin: number;
+  totalDiscount: number;
 }
 
 export interface ComparativeData {

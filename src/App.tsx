@@ -23,7 +23,8 @@ import {
   X,
   CheckCircle,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Tag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { KpiSummary, ComparativeData, ChannelData, FilterState } from './types';
@@ -517,11 +518,12 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
   return (
     <div className="space-y-8">
       {/* KPI Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard title="Ingresos Totales" value={formatCurrency(totalSales)} icon={<DollarSign size={20} />} />
         <KpiCard title="Cantidad Vendida" value={summary.totalQuantity?.toString() || "0"} icon={<Package size={20} />} subtitle="unidades" />
         <KpiCard title="Costo de Ventas" value={formatCurrency(summary.totalCost || 0)} icon={<TrendingUp size={20} />} />
         <KpiCard title="Margen Bruto" value={formatCurrency(summary.totalMargin || 0)} icon={<TrendingUp size={20} />} subtitle={formatPercent(marginPct)} />
+        <KpiCard title="Descuentos" value={formatCurrency(Math.abs(summary.totalDiscount || 0))} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(Math.abs(summary.totalDiscount || 0), totalSales))} />
       </div>
 
       {/* Charts Row */}
