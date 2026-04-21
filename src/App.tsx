@@ -513,14 +513,26 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
   if (!summary) return null;
 
   const totalSales = summary.totalSales || 0;
-  const marginPct = safeDivide(summary.totalMargin || 0, totalSales);
+  const totalTax = summary.totalTax || 0;
+  const ventaNeta = totalSales - totalTax;
+  const marginPct = safeDivide(summary.totalMargin || 0, ventaNeta);
+
+  const familyChartData = Object.values(
+    compData.reduce((acc, d) => {
+      if (!acc[d.family]) acc[d.family] = { family: d.family, sales: 0, quantity: 0 };
+      acc[d.family].sales += d.sales;
+      acc[d.family].quantity += d.quantity;
+      return acc;
+    }, {} as Record<string, { family: string; sales: number; quantity: number }>)
+  ).sort((a, b) => a.sales - b.sales);
+  const totalFamilySales = familyChartData.reduce((a, d) => a + d.sales, 0);
 
   return (
     <div className="space-y-8">
       {/* KPI Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard title="Ingresos Totales" value={formatCurrency(totalSales)} icon={<DollarSign size={20} />} />
-        <KpiCard title="Cantidad Vendida" value={summary.totalQuantity?.toString() || "0"} icon={<Package size={20} />} subtitle="unidades" />
+        <KpiCard title="Número de Órdenes" value={(summary.totalOrders ?? 0).toString()} icon={<Package size={20} />} subtitle="órdenes" />
         <KpiCard title="Costo de Ventas" value={formatCurrency(summary.totalCost || 0)} icon={<TrendingUp size={20} />} />
         <KpiCard title="Margen Bruto" value={formatCurrency(summary.totalMargin || 0)} icon={<TrendingUp size={20} />} subtitle={formatPercent(marginPct)} />
         <KpiCard title="Descuentos" value={formatCurrency(Math.abs(summary.totalDiscount || 0))} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(Math.abs(summary.totalDiscount || 0), totalSales))} />
@@ -532,17 +544,54 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
           <h3 className="font-bold text-xl mb-6">Distribución por Familia</h3>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={Object.values(compData.reduce((acc, d) => { if (!acc[d.family]) acc[d.family] = { family: d.family, sales: 0 }; acc[d.family].sales += d.sales; return acc; }, {} as Record<string, { family: string; sales: number }>)).sort((a, b) => a.sales - b.sales)} barSize={40}>
+              <BarChart data={familyChartData} barSize={40}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
                 <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
                 <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
                 <Tooltip
                   cursor={{ fill: '#272121', opacity: 0.05 }}
-                  contentStyle={tooltipStyle}
-                  formatter={(value: number) => formatCurrency(value)}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload as { family: string; sales: number; quantity: number };
+                    return (
+                      <div style={tooltipStyle}>
+                        <p className="font-bold text-sm mb-2">{d.family}</p>
+                        <div className="space-y-1 text-xs">
+                          <p className="flex justify-between gap-4">
+                            <span className="opacity-60">Ventas</span>
+                            <span className="font-mono font-bold">{formatCurrency(d.sales)}</span>
+                          </p>
+                          <p className="flex justify-between gap-4">
+                            <span className="opacity-60">Cantidad</span>
+                            <span className="font-mono font-bold">{d.quantity.toLocaleString('es-CL')} uds</span>
+                          </p>
+                          <p className="flex justify-between gap-4">
+                            <span className="opacity-60">Participación</span>
+                            <span className="font-mono font-bold">{formatPercent(safeDivide(d.sales, totalFamilySales))}</span>
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  }}
                 />
                 <Bar dataKey="sales" fill="#272121" radius={[6, 6, 0, 0]}>
-                  <LabelList dataKey="sales" position="top" fontSize={10} fill="#272121" opacity={0.5} formatter={(v: number) => formatCompact(v)} />
+                  <LabelList
+                    content={(props: any) => {
+                      const { x, y, width, value, index } = props;
+                      const item = familyChartData[index];
+                      if (!item) return null;
+                      return (
+                        <g>
+                          <text x={x + width / 2} y={y - 18} textAnchor="middle" fontSize={10} fill="#272121" opacity={0.55} fontWeight="600">
+                            {formatCompact(value)}
+                          </text>
+                          <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={9} fill="#272121" opacity={0.38}>
+                            {formatPercent(safeDivide(item.sales, totalFamilySales))}
+                          </text>
+                        </g>
+                      );
+                    }}
+                  />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -829,18 +878,24 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
       ) : (
       <>
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <KpiCard
+          title="Total Ventas"
+          value={formatCurrency(totalPersonalSales + totalNonPersonalSales)}
+          icon={<DollarSign size={20} />}
+          subtitle="Personales + Compartir"
+        />
         <KpiCard
           title="Total Personales"
           value={formatCurrency(totalPersonalSales)}
           icon={<Users size={20} />}
-          subtitle={`${formatPercent(safeDivide(totalPersonalSales, totalSales))} del total`}
+          subtitle={`${formatPercent(safeDivide(totalPersonalSales, totalPersonalSales + totalNonPersonalSales))} del total`}
         />
         <KpiCard
           title="Total Para Compartir"
           value={formatCurrency(totalNonPersonalSales)}
           icon={<ShoppingBag size={20} />}
-          subtitle={`${formatPercent(safeDivide(totalNonPersonalSales, totalSales))} del total`}
+          subtitle={`${formatPercent(safeDivide(totalNonPersonalSales, totalPersonalSales + totalNonPersonalSales))} del total`}
         />
         <KpiCard title="Cantidad Total" value={totalQuantity.toString()} icon={<Package size={20} />} subtitle="unidades" />
         <KpiCard title="Margen Bruto de Ganancia" value={formatPercent(avgMargin)} icon={<TrendingUp size={20} />} subtitle="No incluye gastos operativos (arriendo, sueldos, servicios, comisiones)" />

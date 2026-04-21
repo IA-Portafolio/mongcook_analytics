@@ -48,10 +48,12 @@ async function startServer() {
     let query = `
       SELECT
         SUM(total_price) as totalSales,
+        SUM(total_tax) as totalTax,
         SUM(total_cost) as totalCost,
         SUM(quantity) as totalQuantity,
+        COUNT(DISTINCT order_id) as totalOrders,
         SUM(total_discount) as totalDiscount,
-        (SUM(total_price) - SUM(total_cost)) as totalMargin
+        (SUM(total_price) - SUM(total_tax) - SUM(total_cost)) as totalMargin
       FROM sales_data
       WHERE date BETWEEN ? AND ?
     `;
@@ -284,13 +286,13 @@ async function startServer() {
 
       // Insert into DB
       const insert = db.prepare(`
-        INSERT INTO sales_data (date, product_name, family, channel, quantity, total_price, total_cost, total_discount, is_personal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sales_data (order_id, date, product_name, family, channel, quantity, total_price, total_tax, total_cost, total_discount, is_personal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const transaction = db.transaction((rows: typeof sales) => {
         for (const r of rows) {
-          insert.run(r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_cost, r.total_discount, r.is_personal);
+          insert.run(r.order_id, r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_tax, r.total_cost, r.total_discount, r.is_personal);
         }
       });
 
@@ -387,13 +389,13 @@ async function startServer() {
 
       const clearStmt = db.prepare('DELETE FROM sales_data WHERE date BETWEEN ? AND ?');
       const insert = db.prepare(`
-        INSERT INTO sales_data (date, product_name, family, channel, quantity, total_price, total_cost, total_discount, is_personal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sales_data (order_id, date, product_name, family, channel, quantity, total_price, total_tax, total_cost, total_discount, is_personal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const tx = db.transaction((rows: typeof sales) => {
         clearStmt.run(startDate, today);
         for (const r of rows) {
-          insert.run(r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_cost, r.total_discount, r.is_personal);
+          insert.run(r.order_id, r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_tax, r.total_cost, r.total_discount, r.is_personal);
         }
       });
       tx(sales);

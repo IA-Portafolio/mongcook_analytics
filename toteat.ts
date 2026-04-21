@@ -79,12 +79,14 @@ export interface ProductMapping {
 
 /** Transformed record ready for our sales_data table */
 export interface NormalizedSale {
+  order_id: string;
   date: string;
   product_name: string;
   family: string;
   channel: string;
   quantity: number;
-  total_price: number;
+  total_price: number;  // netPrice - discounts (bruta con IVA, después de descuentos)
+  total_tax: number;    // IVA del producto (ya incluido en total_price)
   total_cost: number;
   total_discount: number;
   is_personal: number; // 1 = Personal, 0 = Compartir, -1 = Complemento (no aplica)
@@ -328,19 +330,24 @@ export function normalizeSales(
     const date = order.dateOpen?.slice(0, 10) || new Date().toISOString().slice(0, 10);
 
     for (const product of order.products) {
-      // Skip zero-quantity or modifier-only items with no revenue
+      // Skip zero-quantity and zero-revenue items (pure modifiers with no price or cost impact)
       if (product.quantity === 0 && product.netPrice === 0) continue;
 
       const mapping = classifyProduct(product, customMap);
 
       const discount = product.discounts || 0;
+      // product.payed = amount customer paid for this product (post-discount, with IVA).
+      // sum(product.payed) = order.total + order.discounts = "Total Venta Bruta" del dashboard Toteat.
+      // product.taxes = IVA embebido en payed (para calcular Venta Neta = payed - taxes).
       results.push({
+        order_id: String(order.orderId),
         date,
         product_name: product.name,
         family: mapping.family,
         channel,
         quantity: product.quantity,
-        total_price: product.netPrice + product.taxes - Math.abs(discount), // gross price net of discounts
+        total_price: product.payed || 0,
+        total_tax: product.taxes || 0,
         total_cost: product.totalCost,
         total_discount: Math.abs(discount),
         is_personal: mapping.type === 'Personal' ? 1 : mapping.type === 'Compartir' ? 0 : -1,

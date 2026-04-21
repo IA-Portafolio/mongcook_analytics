@@ -12,8 +12,10 @@ export interface SaleData {
 
 export interface KpiSummary {
   totalSales: number;
+  totalTax: number;
   totalCost: number;
   totalQuantity: number;
+  totalOrders: number;
   totalMargin: number;
   totalDiscount: number;
 }
