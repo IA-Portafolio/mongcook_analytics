@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { KpiSummary, ComparativeData, ChannelData, FilterState } from './types';
+import { buildDefaultFilterState } from './lib/dashboard-range';
 import { formatCurrency, formatPercent, cn, safeDivide } from './lib/utils';
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -101,6 +102,7 @@ function ToastContainer({ toasts }: { toasts: ToastData[] }) {
 // ── Main App ─────────────────────────────────────────────────────────
 
 export default function App() {
+  const defaultFilters = buildDefaultFilterState();
   const [activeTab, setActiveTab] = useState<'summary' | 'comparative1' | 'comparative2' | 'byProduct'>('summary');
   const [summary, setSummary] = useState<KpiSummary | null>(null);
   const [compData, setCompData] = useState<ComparativeData[]>([]);
@@ -118,11 +120,7 @@ export default function App() {
       window.localStorage.setItem('sidebarCollapsed', sidebarCollapsed ? '1' : '0');
     }
   }, [sidebarCollapsed]);
-  const [filters, setFilters] = useState<FilterState>({
-    startDate: '',
-    endDate: '',
-    families: [],
-  });
+  const [filters, setFilters] = useState<FilterState>(() => buildDefaultFilterState());
   const { toasts, show: showToast } = useToast();
   const hasData = summary && (summary.totalSales || summary.totalQuantity);
   const availableFamilies = [...new Set([...compData.map(d => d.family), ...channelData.map(d => d.family)])].sort();
@@ -164,6 +162,22 @@ export default function App() {
     fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+
+    window.addEventListener('focus', refreshIfVisible);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+
+    return () => {
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [fetchData]);
+
   const seedData = async () => {
     try {
       const res = await fetch('/api/data/seed', { method: 'POST' });
@@ -184,7 +198,10 @@ export default function App() {
     }));
   };
 
-  const activeFiltersCount = (filters.startDate ? 1 : 0) + (filters.endDate ? 1 : 0) + filters.families.length;
+  const activeFiltersCount =
+    (filters.startDate && filters.startDate !== defaultFilters.startDate ? 1 : 0) +
+    (filters.endDate && filters.endDate !== defaultFilters.endDate ? 1 : 0) +
+    filters.families.length;
 
   const sidebarContent = (
     <>
@@ -400,7 +417,7 @@ export default function App() {
                   </div>
                   {activeFiltersCount > 0 && (
                     <button
-                      onClick={() => setFilters({ startDate: '', endDate: '', families: [] })}
+                      onClick={() => setFilters(buildDefaultFilterState())}
                       className="text-xs font-mono text-[#ff0024] hover:underline whitespace-nowrap"
                     >
                       Limpiar filtros
@@ -514,7 +531,8 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
 
   const totalSales = summary.totalSales || 0;
   const totalTax = summary.totalTax || 0;
-  const ventaNeta = totalSales - totalTax;
+  const totalDiscount = Math.abs(summary.totalDiscount || 0);
+  const ventaNeta = totalSales - totalDiscount - totalTax;
   const marginPct = safeDivide(summary.totalMargin || 0, ventaNeta);
 
   const familyChartData = Object.values(
@@ -534,8 +552,8 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
         <KpiCard title="Ingresos Totales" value={formatCurrency(totalSales)} icon={<DollarSign size={20} />} />
         <KpiCard title="Número de Órdenes" value={(summary.totalOrders ?? 0).toString()} icon={<Package size={20} />} subtitle="órdenes" />
         <KpiCard title="Costo de Ventas" value={formatCurrency(summary.totalCost || 0)} icon={<TrendingUp size={20} />} />
-        <KpiCard title="Margen Bruto" value={formatCurrency(summary.totalMargin || 0)} icon={<TrendingUp size={20} />} subtitle={formatPercent(marginPct)} />
-        <KpiCard title="Descuentos" value={formatCurrency(Math.abs(summary.totalDiscount || 0))} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(Math.abs(summary.totalDiscount || 0), totalSales))} />
+        <KpiCard title="Margen Neto" value={formatCurrency(summary.totalMargin || 0)} icon={<TrendingUp size={20} />} subtitle={formatPercent(marginPct)} />
+        <KpiCard title="Descuentos" value={formatCurrency(totalDiscount)} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(totalDiscount, totalSales))} />
       </div>
 
       {/* Charts Row */}

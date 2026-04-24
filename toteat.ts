@@ -45,7 +45,7 @@ export interface ToteatOrder {
   waiterId: number;
   waiterName: string;
   numberClients: number;
-  tableId: number;
+  tableId: number | string;
   tableName: string;
   zoneId: string;
   zoneName: string;
@@ -90,6 +90,34 @@ export interface NormalizedSale {
   total_cost: number;
   total_discount: number;
   is_personal: number; // 1 = Personal, 0 = Compartir, -1 = Complemento (no aplica)
+}
+
+/** Aggregated order record ready for our sales_orders table */
+export interface CachedOrderSale {
+  order_id: string;
+  date: string;
+  channel: string;
+  total_sales: number;
+  total_tax: number;
+  total_discount: number;
+  total_cost: number;
+  counts_as_order: number;
+}
+
+export interface ToteatImportSnapshot {
+  productRows: NormalizedSale[];
+  orderRows: CachedOrderSale[];
+}
+
+export interface ToteatShiftStatus {
+  status: string;
+  date: string;
+}
+
+interface ToteatShiftStatusResponse {
+  ok: boolean;
+  msg?: string;
+  data?: ToteatShiftStatus;
 }
 
 // ── Hierarchy → Family Mapping ───────────────────────────────────────
@@ -194,6 +222,124 @@ function detectChannel(order: ToteatOrder): string {
   return 'Punto de Venta';
 }
 
+function orderDate(order: ToteatOrder): string {
+  return order.dateOpen?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+}
+
+function addDays(date: string, amount: number): string {
+  const value = new Date(date);
+  value.setDate(value.getDate() + amount);
+  return value.toISOString().slice(0, 10);
+}
+
+function productSignature(product: ToteatProduct): string {
+  return JSON.stringify([
+    product.id || "",
+    product.name || "",
+    product.quantity || 0,
+    product.payed || 0,
+    product.discounts || 0,
+    product.taxes || 0,
+    product.totalCost || 0,
+    product.hierarchyId || "",
+  ]);
+}
+
+function orderEventSignature(order: ToteatOrder): string {
+  return JSON.stringify({
+    dateOpen: order.dateOpen || "",
+    fiscalType: order.fiscalType || "",
+    subtotal: order.subtotal || 0,
+    discounts: order.discounts || 0,
+    total: order.total || 0,
+    totalWithGratuity: order.totalWithGratuity || 0,
+    taxes: order.taxes || 0,
+    gratuity: order.gratuity || 0,
+    products: (order.products || []).map(productSignature),
+  });
+}
+
+function orderProductCost(order: ToteatOrder): number {
+  if (order.products?.length) {
+    return order.products.reduce((sum, product) => sum + (product.totalCost || 0), 0);
+  }
+
+  return order.totalCost || 0;
+}
+
+function scoreOrderCandidate(order: ToteatOrder): number {
+  const productCount = order.products?.length || 0;
+  const totalMagnitude = Math.abs(order.total || 0);
+  const closeTime = Date.parse(order.dateClosed || order.dateOpen || "");
+  return (productCount * 1_000_000_000_000) + (totalMagnitude * 1_000_000) + (Number.isFinite(closeTime) ? closeTime : 0);
+}
+
+function pickPreferredOrder(existing: ToteatOrder, candidate: ToteatOrder): ToteatOrder {
+  return scoreOrderCandidate(candidate) >= scoreOrderCandidate(existing) ? candidate : existing;
+}
+
+export function dedupeOrderEvents(orders: ToteatOrder[]): ToteatOrder[] {
+  const uniqueEvents = new Map<string, ToteatOrder>();
+
+  for (const order of orders) {
+    const key = `${order.orderId}::${orderEventSignature(order)}`;
+    const existing = uniqueEvents.get(key);
+    uniqueEvents.set(key, existing ? pickPreferredOrder(existing, order) : order);
+  }
+
+  return [...uniqueEvents.values()];
+}
+
+export function dedupeOrdersById(orders: ToteatOrder[]): ToteatOrder[] {
+  const uniqueOrders = new Map<string, ToteatOrder>();
+
+  for (const order of dedupeOrderEvents(orders)) {
+    const orderId = String(order.orderId);
+    const existing = uniqueOrders.get(orderId);
+    uniqueOrders.set(orderId, existing ? pickPreferredOrder(existing, order) : order);
+  }
+
+  return [...uniqueOrders.values()];
+}
+
+export function buildOrderCacheRows(orders: ToteatOrder[]): CachedOrderSale[] {
+  const groupedOrders = new Map<string, ToteatOrder[]>();
+
+  for (const order of dedupeOrderEvents(orders)) {
+    const orderId = String(order.orderId);
+    const existing = groupedOrders.get(orderId) || [];
+    existing.push(order);
+    groupedOrders.set(orderId, existing);
+  }
+
+  return [...groupedOrders.entries()]
+    .map(([orderId, events]) => {
+      const primaryOrder = events.reduce((best, candidate) => pickPreferredOrder(best, candidate));
+      const totalSales = events.reduce((sum, event) => sum + (event.total || 0), 0);
+      const totalTax = events.reduce((sum, event) => sum + (event.taxes || 0), 0);
+      const totalDiscount = events.reduce((sum, event) => sum + Math.abs(event.discounts || 0), 0);
+      const totalCost = events.reduce((sum, event) => sum + orderProductCost(event), 0);
+      const hasCreditNote = events.some(
+        (event) => event.fiscalType === "NC" || (event.total || 0) < 0 || (event.payed || 0) < 0,
+      );
+
+      return {
+        order_id: orderId,
+        date: orderDate(primaryOrder),
+        channel: detectChannel(primaryOrder),
+        total_sales: totalSales,
+        total_tax: totalTax,
+        total_discount: totalDiscount,
+        total_cost: totalCost,
+        counts_as_order: hasCreditNote && Math.abs(totalSales) < 0.005 ? 0 : 1,
+      };
+    })
+    .sort((left, right) => {
+      if (left.date === right.date) return left.order_id.localeCompare(right.order_id);
+      return left.date.localeCompare(right.date);
+    });
+}
+
 // ── Classify a product ───────────────────────────────────────────────
 
 function classifyProduct(product: ToteatProduct, customMap?: Record<string, ProductMapping>): ProductMapping {
@@ -252,16 +398,34 @@ export async function fetchToteatSales(
   url.searchParams.set('ini', toToteatDate(startDate));
   url.searchParams.set('end', toToteatDate(endDate));
 
-  let response = await fetch(url.toString(), { method: 'GET' });
-
-  // Retry on 429 with backoff (Toteat enforces 3 req/min).
+  let response: Response | null = null;
   let attempts = 0;
-  while (response.status === 429 && attempts < 4) {
+  let lastError: unknown = null;
+
+  while (attempts < 5) {
+    try {
+      response = await fetch(url.toString(), { method: 'GET' });
+    } catch (error) {
+      lastError = error;
+      const waitMs = 5000 * (attempts + 1);
+      console.warn(`[toteat] network error, retrying in ${waitMs / 1000}s (attempt ${attempts + 1}/5)`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      attempts++;
+      continue;
+    }
+
+    if (response.status !== 429) break;
+
     const waitMs = 25000 * (attempts + 1);
-    console.warn(`[toteat] 429 rate-limited, waiting ${waitMs / 1000}s (attempt ${attempts + 1}/4)`);
-    await new Promise(r => setTimeout(r, waitMs));
-    response = await fetch(url.toString(), { method: 'GET' });
+    console.warn(`[toteat] 429 rate-limited, waiting ${waitMs / 1000}s (attempt ${attempts + 1}/5)`);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    response = null;
     attempts++;
+  }
+
+  if (!response) {
+    if (lastError instanceof Error) throw lastError;
+    throw new Error("fetch failed");
   }
 
   if (!response.ok) {
@@ -282,6 +446,41 @@ export async function fetchToteatSales(
   return json.data;
 }
 
+export async function fetchToteatShiftStatus(config: ToteatConfig): Promise<ToteatShiftStatus | null> {
+  const url = new URL('/mw/or/1.0/shiftstatus', config.baseUrl);
+  url.searchParams.set('xir', config.xir);
+  url.searchParams.set('xil', config.xil);
+  url.searchParams.set('xiu', config.xiu);
+  url.searchParams.set('xapitoken', config.xapitoken);
+
+  const response = await fetch(url.toString(), { method: "GET" });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Toteat shiftstatus error ${response.status}: ${response.statusText}. ${body}`);
+  }
+
+  const json = (await response.json()) as ToteatShiftStatusResponse;
+  if (!json.ok) {
+    throw new Error(`Toteat shiftstatus returned error: ${json.msg || "Unknown error"}`);
+  }
+
+  return json.data || null;
+}
+
+export function clampEndDateToLastClosedShift(
+  endDate: string,
+  shiftStatus?: ToteatShiftStatus | null,
+): string {
+  if (!shiftStatus || shiftStatus.status !== "open" || !shiftStatus.date) {
+    return endDate;
+  }
+
+  const openShiftDate = shiftStatus.date.slice(0, 10);
+  const lastClosedDate = addDays(openShiftDate, -1);
+
+  return endDate < lastClosedDate ? endDate : lastClosedDate;
+}
+
 /** Fetch sales across a period longer than 15 days by splitting into chunks */
 export async function fetchToteatSalesChunked(
   config: ToteatConfig,
@@ -291,9 +490,20 @@ export async function fetchToteatSalesChunked(
   const start = new Date(startDate);
   const end = new Date(endDate);
   const allOrders: ToteatOrder[] = [];
+  let windowStartedAt = Date.now();
+  let requestsInWindow = 0;
 
   let chunkStart = new Date(start);
   while (chunkStart <= end) {
+    if (requestsInWindow >= 3) {
+      const elapsedMs = Date.now() - windowStartedAt;
+      if (elapsedMs < 60_000) {
+        await new Promise((resolve) => setTimeout(resolve, 60_000 - elapsedMs));
+      }
+      windowStartedAt = Date.now();
+      requestsInWindow = 0;
+    }
+
     const chunkEnd = new Date(chunkStart);
     chunkEnd.setDate(chunkEnd.getDate() + 14); // 15 days max
     if (chunkEnd > end) chunkEnd.setTime(end.getTime());
@@ -303,15 +513,11 @@ export async function fetchToteatSalesChunked(
 
     const orders = await fetchToteatSales(config, startStr, endStr);
     allOrders.push(...orders);
+    requestsInWindow += 1;
 
     // Move to next chunk
     chunkStart = new Date(chunkEnd);
     chunkStart.setDate(chunkStart.getDate() + 1);
-
-    // Rate limit: Toteat allows 3 requests per minute → wait 21s between chunks
-    if (chunkStart <= end) {
-      await new Promise(resolve => setTimeout(resolve, 21000));
-    }
   }
 
   return allOrders;
@@ -325,9 +531,9 @@ export function normalizeSales(
 ): NormalizedSale[] {
   const results: NormalizedSale[] = [];
 
-  for (const order of orders) {
+  for (const order of dedupeOrderEvents(orders)) {
     const channel = detectChannel(order);
-    const date = order.dateOpen?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    const date = orderDate(order);
 
     for (const product of order.products) {
       // Skip zero-quantity and zero-revenue items (pure modifiers with no price or cost impact)
@@ -366,7 +572,20 @@ export async function importToteatSales(
   endDate: string,
   customMap?: Record<string, ProductMapping>,
 ): Promise<NormalizedSale[]> {
-  // Use chunked fetch to handle periods > 15 days
+  const snapshot = await importToteatSnapshot(config, startDate, endDate, customMap);
+  return snapshot.productRows;
+}
+
+export async function importToteatSnapshot(
+  config: ToteatConfig,
+  startDate: string,
+  endDate: string,
+  customMap?: Record<string, ProductMapping>,
+): Promise<ToteatImportSnapshot> {
   const orders = await fetchToteatSalesChunked(config, startDate, endDate);
-  return normalizeSales(orders, customMap);
+
+  return {
+    productRows: normalizeSales(orders, customMap),
+    orderRows: buildOrderCacheRows(orders),
+  };
 }

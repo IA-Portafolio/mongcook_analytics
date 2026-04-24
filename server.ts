@@ -1,7 +1,18 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
+import { buildChannelMetrics, buildComparativeTypeMetrics, buildProductMetrics, summarizeSnapshot } from "./analytics.ts";
 import db from "./db.ts";
-import { importToteatSales, normalizeSales, PRODUCT_MAP, type ProductMapping } from "./toteat.ts";
+import { resolveDashboardDateRange, todayDate } from "./src/lib/dashboard-range.ts";
+import { backfillToteatCache, getAutoSyncRange, syncToteatRange } from "./toteat-cache.ts";
+import {
+  clampEndDateToLastClosedShift,
+  fetchToteatShiftStatus,
+  importToteatSnapshot,
+  PRODUCT_MAP,
+  type ProductMapping,
+  type ToteatImportSnapshot,
+  type ToteatShiftStatus,
+} from "./toteat.ts";
 
 async function startServer() {
   const app = express();
@@ -41,142 +52,148 @@ async function startServer() {
     res.json({ ok: true, families: summary });
   });
 
-  // Get Summary Metrics
-  app.get("/api/metrics/summary", (req, res) => {
-    const { startDate, endDate, families } = req.query;
+  function parseFamiliesParam(families: unknown) {
+    if (!families || typeof families !== "string") return undefined;
+    const familyList = families
+      .split(",")
+      .map((family) => family.trim())
+      .filter(Boolean);
+    return familyList.length > 0 ? familyList : undefined;
+  }
 
-    let query = `
-      SELECT
-        SUM(total_price) as totalSales,
-        SUM(total_tax) as totalTax,
-        SUM(total_cost) as totalCost,
-        SUM(quantity) as totalQuantity,
-        COUNT(DISTINCT order_id) as totalOrders,
-        SUM(total_discount) as totalDiscount,
-        (SUM(total_price) - SUM(total_tax) - SUM(total_cost)) as totalMargin
-      FROM sales_data
-      WHERE date BETWEEN ? AND ?
-    `;
-    const params: (string | number)[] = [
-      (startDate as string) || '2000-01-01',
-      (endDate as string) || '2099-12-31'
-    ];
+  let shiftStatusCache: { value: ToteatShiftStatus | null; expiresAt: number; inFlight: Promise<ToteatShiftStatus | null> | null } =
+    { value: null, expiresAt: 0, inFlight: null };
 
-    if (families) {
-      const familyList = (families as string).split(',').map(f => f.trim());
-      query += ` AND family IN (${familyList.map(() => '?').join(',')})`;
-      params.push(...familyList);
+  async function getCachedShiftStatus() {
+    const now = Date.now();
+    if (shiftStatusCache.value && now < shiftStatusCache.expiresAt) {
+      return shiftStatusCache.value;
     }
 
-    const result = db.prepare(query).get(...params);
-    res.json(result);
+    if (shiftStatusCache.inFlight) {
+      return shiftStatusCache.inFlight;
+    }
+
+    shiftStatusCache.inFlight = fetchToteatShiftStatus(getToteatConfig())
+      .then((value) => {
+        shiftStatusCache.value = value;
+        shiftStatusCache.expiresAt = Date.now() + 5 * 60 * 1000;
+        shiftStatusCache.inFlight = null;
+        return value;
+      })
+      .catch((error) => {
+        console.warn("[shiftstatus] Failed to refresh Toteat shift status:", error?.message || error);
+        shiftStatusCache.inFlight = null;
+        return shiftStatusCache.value;
+      });
+
+    return shiftStatusCache.inFlight;
+  }
+
+  async function resolveEffectiveDateRange(startDate?: string, endDate?: string) {
+    const requestedRange = resolveDashboardDateRange(
+      { startDate, endDate },
+      todayDate(),
+    );
+    const requestedStartDate = requestedRange.startDate;
+    const requestedEndDate = requestedRange.endDate;
+
+    if (requestedEndDate < todayDate()) {
+      return { startDate: requestedStartDate, endDate: requestedEndDate };
+    }
+
+    const shiftStatus = await getCachedShiftStatus();
+    return {
+      startDate: requestedStartDate,
+      endDate: clampEndDateToLastClosedShift(requestedEndDate, shiftStatus),
+    };
+  }
+
+  const analyticsSnapshotCache = new Map<
+    string,
+    { value: ToteatImportSnapshot | null; expiresAt: number; inFlight: Promise<ToteatImportSnapshot> | null }
+  >();
+
+  async function getAnalyticsSnapshot(startDate: string, endDate: string) {
+    const key = `${startDate}:${endDate}`;
+    const existing = analyticsSnapshotCache.get(key);
+    const now = Date.now();
+
+    if (existing?.value && now < existing.expiresAt) {
+      return existing.value;
+    }
+
+    if (existing?.inFlight) {
+      return existing.inFlight;
+    }
+
+    const inFlight = importToteatSnapshot(getToteatConfig(), startDate, endDate)
+      .then((snapshot) => {
+        analyticsSnapshotCache.set(key, {
+          value: snapshot,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+          inFlight: null,
+        });
+        return snapshot;
+      })
+      .catch((error) => {
+        analyticsSnapshotCache.delete(key);
+        throw error;
+      });
+
+    analyticsSnapshotCache.set(key, {
+      value: existing?.value || null,
+      expiresAt: existing?.expiresAt || 0,
+      inFlight,
+    });
+
+    return inFlight;
+  }
+
+  // Get Summary Metrics
+  app.get("/api/metrics/summary", async (req, res) => {
+    const { startDate, endDate, families } = req.query;
+    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
+    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
+    res.json(summarizeSnapshot(snapshot, parseFamiliesParam(families)));
   });
 
   // Get Comparative 1: Personal vs No Personal
-  app.get("/api/metrics/comparative-type", (req, res) => {
+  app.get("/api/metrics/comparative-type", async (req, res) => {
     const { startDate, endDate, families } = req.query;
-
-    let query = `
-      SELECT
-        is_personal,
-        family,
-        SUM(quantity) as quantity,
-        SUM(total_price) as sales,
-        SUM(total_cost) as cost
-      FROM sales_data
-      WHERE date BETWEEN ? AND ?
-    `;
-    const params: (string | number)[] = [
-      (startDate as string) || '2000-01-01',
-      (endDate as string) || '2099-12-31'
-    ];
-
-    if (families) {
-      const familyList = (families as string).split(',').map(f => f.trim());
-      query += ` AND family IN (${familyList.map(() => '?').join(',')})`;
-      params.push(...familyList);
-    }
-
-    query += ` GROUP BY is_personal, family`;
-
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
+    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
+    res.json(buildComparativeTypeMetrics(snapshot, parseFamiliesParam(families)));
   });
 
   // Get Comparative 2: By Channel
-  app.get("/api/metrics/comparative-channel", (req, res) => {
+  app.get("/api/metrics/comparative-channel", async (req, res) => {
     const { startDate, endDate, families } = req.query;
-
-    let query = `
-      SELECT
-        channel,
-        family,
-        SUM(quantity) as quantity,
-        SUM(total_price) as sales,
-        SUM(total_cost) as cost
-      FROM sales_data
-      WHERE date BETWEEN ? AND ?
-    `;
-    const params: (string | number)[] = [
-      (startDate as string) || '2000-01-01',
-      (endDate as string) || '2099-12-31'
-    ];
-
-    if (families) {
-      const familyList = (families as string).split(',').map(f => f.trim());
-      query += ` AND family IN (${familyList.map(() => '?').join(',')})`;
-      params.push(...familyList);
-    }
-
-    query += ` GROUP BY channel, family`;
-
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
+    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
+    res.json(buildChannelMetrics(snapshot, parseFamiliesParam(families)));
   });
 
   // Product-level metrics
-  app.get("/api/metrics/by-product", (req, res) => {
+  app.get("/api/metrics/by-product", async (req, res) => {
     const { startDate, endDate, families, family } = req.query;
-
-    let query = `
-      SELECT
-        product_name,
-        family,
-        channel,
-        is_personal,
-        SUM(quantity) as quantity,
-        SUM(total_price) as sales,
-        SUM(total_cost) as cost
-      FROM sales_data
-      WHERE date BETWEEN ? AND ?
-    `;
-    const params: (string | number)[] = [
-      (startDate as string) || '2000-01-01',
-      (endDate as string) || '2099-12-31'
-    ];
-
-    if (family) {
-      query += ` AND family = ?`;
-      params.push(family as string);
-    } else if (families) {
-      const familyList = (families as string).split(',').map(f => f.trim());
-      query += ` AND family IN (${familyList.map(() => '?').join(',')})`;
-      params.push(...familyList);
-    }
-
-    query += ` GROUP BY product_name, family, channel, is_personal`;
-
-    const rows = db.prepare(query).all(...params);
-    res.json(rows);
+    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
+    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
+    res.json(buildProductMetrics(snapshot, parseFamiliesParam(families), family as string | undefined));
   });
 
   // Mock Upload Endpoint (Simulation for MVP)
   app.post("/api/data/seed", (req, res) => {
     // Clear existing data for idempotency
     db.prepare('DELETE FROM sales_data').run();
+    db.prepare('DELETE FROM sales_orders').run();
 
     const insert = db.prepare(`
       INSERT INTO sales_data (date, product_name, family, channel, quantity, total_price, total_cost, is_personal)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertOrder = db.prepare(`
+      INSERT INTO sales_orders (order_id, date, channel, total_sales, total_tax, total_discount, total_cost, counts_as_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
@@ -239,7 +256,13 @@ async function startServer() {
     }
 
     const transaction = db.transaction((data: typeof mockData) => {
-      for (const row of data) insert.run(...row);
+      let orderCounter = 0;
+      for (const row of data) {
+        insert.run(...row);
+        orderCounter += 1;
+        const [date, _product, _family, channel, _quantity, price, cost] = row;
+        insertOrder.run(`seed-${orderCounter}`, date, channel, price, 0, 0, cost, 1);
+      }
     });
 
     transaction(mockData);
@@ -272,42 +295,50 @@ async function startServer() {
     const config = getToteatConfig({ useDevApi });
 
     try {
-      const sales = await importToteatSales(
-        config,
+      const result = await syncToteatRange(db, config, {
         startDate,
         endDate,
-        customMapping as Record<string, ProductMapping> | undefined,
-      );
-
-      // Optionally clear existing data for the period
-      if (clearExisting) {
-        db.prepare('DELETE FROM sales_data WHERE date BETWEEN ? AND ?').run(startDate, endDate);
-      }
-
-      // Insert into DB
-      const insert = db.prepare(`
-        INSERT INTO sales_data (order_id, date, product_name, family, channel, quantity, total_price, total_tax, total_cost, total_discount, is_personal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      const transaction = db.transaction((rows: typeof sales) => {
-        for (const r of rows) {
-          insert.run(r.order_id, r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_tax, r.total_cost, r.total_discount, r.is_personal);
-        }
+        clearExisting: clearExisting ?? true,
+        customMapping: customMapping as Record<string, ProductMapping> | undefined,
       });
-
-      transaction(sales);
 
       res.json({
         message: "Toteat import successful",
-        rows: sales.length,
+        rows: result.productRows,
+        orders: result.orderRows,
         dateRange: { startDate, endDate },
-        channels: [...new Set(sales.map(s => s.channel))],
-        families: [...new Set(sales.map(s => s.family))],
+        channels: result.channels,
+        families: result.families,
       });
     } catch (error: any) {
       console.error("Toteat import error:", error);
       res.status(502).json({ error: error.message || "Failed to fetch from Toteat API" });
+    }
+  });
+
+  app.post("/api/toteat/backfill", async (req, res) => {
+    const { startDate, endDate, useDevApi, customMapping } = req.body;
+    const config = getToteatConfig({ useDevApi });
+
+    try {
+      const result = await backfillToteatCache(db, config, {
+        startDate,
+        endDate,
+        clearExisting: true,
+        customMapping: customMapping as Record<string, ProductMapping> | undefined,
+      });
+
+      res.json({
+        message: "Toteat backfill successful",
+        rows: result.productRows,
+        orders: result.orderRows,
+        dateRange: { startDate: result.startDate, endDate: result.endDate },
+        channels: result.channels,
+        families: result.families,
+      });
+    } catch (error: any) {
+      console.error("Toteat backfill error:", error);
+      res.status(502).json({ error: error.message || "Failed to backfill Toteat cache" });
     }
   });
 
@@ -328,17 +359,20 @@ async function startServer() {
     const config = getToteatConfig({ useDevApi });
 
     try {
-      const sales = await importToteatSales(config, startDate, endDate);
+      const snapshot = await importToteatSnapshot(config, startDate, endDate);
 
       // Summary without inserting
       const summary = {
-        totalRows: sales.length,
-        totalSales: sales.reduce((a, s) => a + s.total_price, 0),
-        totalCost: sales.reduce((a, s) => a + s.total_cost, 0),
-        channels: [...new Set(sales.map(s => s.channel))],
-        families: [...new Set(sales.map(s => s.family))],
-        unmappedProducts: sales.filter(s => s.family === 'Otros'),
-        sample: sales.slice(0, 10),
+        totalRows: snapshot.productRows.length,
+        totalOrders: snapshot.orderRows.reduce((sum, row) => sum + row.counts_as_order, 0),
+        totalSales: snapshot.orderRows.reduce((sum, row) => sum + row.total_sales, 0),
+        totalTax: snapshot.orderRows.reduce((sum, row) => sum + row.total_tax, 0),
+        totalDiscount: snapshot.orderRows.reduce((sum, row) => sum + row.total_discount, 0),
+        totalCost: snapshot.orderRows.reduce((sum, row) => sum + row.total_cost, 0),
+        channels: [...new Set(snapshot.productRows.map(row => row.channel))],
+        families: [...new Set(snapshot.productRows.map(row => row.family))],
+        unmappedProducts: snapshot.productRows.filter(row => row.family === 'Otros'),
+        sample: snapshot.productRows.slice(0, 10),
       };
 
       res.json(summary);
@@ -366,40 +400,18 @@ async function startServer() {
   // exactly that window so older data is never touched.
   async function autoSyncToteat() {
     try {
-      const row = db.prepare('SELECT MAX(date) as lastDate FROM sales_data').get() as { lastDate: string | null };
-      const today = new Date().toISOString().slice(0, 10);
+      const { startDate, endDate } = getAutoSyncRange(db);
 
-      let startDate: string;
-      if (row?.lastDate) {
-        const d = new Date(row.lastDate);
-        d.setDate(d.getDate() - 2); // re-import last 2 days to catch late orders
-        startDate = d.toISOString().slice(0, 10);
-      } else {
-        // Empty DB: pull the last 30 days as a sensible first run
-        const d = new Date();
-        d.setDate(d.getDate() - 30);
-        startDate = d.toISOString().slice(0, 10);
-      }
+      if (startDate > endDate) return;
 
-      if (startDate > today) return;
-
-      console.log(`[auto-sync] Importing Toteat ${startDate} → ${today}`);
+      console.log(`[auto-sync] Importing Toteat ${startDate} → ${endDate}`);
       const config = getToteatConfig();
-      const sales = await importToteatSales(config, startDate, today);
-
-      const clearStmt = db.prepare('DELETE FROM sales_data WHERE date BETWEEN ? AND ?');
-      const insert = db.prepare(`
-        INSERT INTO sales_data (order_id, date, product_name, family, channel, quantity, total_price, total_tax, total_cost, total_discount, is_personal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const tx = db.transaction((rows: typeof sales) => {
-        clearStmt.run(startDate, today);
-        for (const r of rows) {
-          insert.run(r.order_id, r.date, r.product_name, r.family, r.channel, r.quantity, r.total_price, r.total_tax, r.total_cost, r.total_discount, r.is_personal);
-        }
+      const result = await syncToteatRange(db, config, {
+        startDate,
+        endDate,
+        clearExisting: true,
       });
-      tx(sales);
-      console.log(`[auto-sync] Done. ${sales.length} rows imported.`);
+      console.log(`[auto-sync] Done. ${result.productRows} product rows / ${result.orderRows} orders imported.`);
     } catch (err: any) {
       console.error('[auto-sync] Failed:', err.message || err);
     }
@@ -407,8 +419,8 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    // Run once on startup, then every 6 hours
-    autoSyncToteat();
+    // Let the first interactive dashboard requests go through before background sync competes for rate limit.
+    setTimeout(autoSyncToteat, 5 * 60 * 1000);
     setInterval(autoSyncToteat, 6 * 60 * 60 * 1000);
   });
 }
