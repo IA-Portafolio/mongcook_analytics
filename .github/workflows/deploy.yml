@@ -23,11 +23,40 @@ jobs:
           TOTEAT_API_TOKEN=${{ secrets.TOTEAT_API_TOKEN }}
           EOF
 
-      - name: Build and deploy with Docker Compose
+      - name: Build Docker image
+        run: |
+          docker compose build --no-cache
+
+      - name: Smoke test image before replacing production
+        run: |
+          docker rm -f mongcook-smoke >/dev/null 2>&1 || true
+          docker run -d --rm \
+            --name mongcook-smoke \
+            --env-file .env \
+            -p 3005:3000 \
+            mongcook_analytics-mongcook
+
+          for i in {1..18}; do
+            STATUS=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' mongcook-smoke 2>/dev/null || echo "missing")
+            echo "Smoke attempt $i: status=$STATUS"
+            if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "running" ]; then
+              break
+            fi
+            if [ "$STATUS" = "unhealthy" ] || [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ] || [ "$STATUS" = "missing" ]; then
+              echo "Smoke container failed"
+              docker logs --tail 200 mongcook-smoke || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+          curl -fsS http://127.0.0.1:3005/api/health
+          docker rm -f mongcook-smoke >/dev/null 2>&1 || true
+
+      - name: Replace production container
         run: |
           docker compose down
-          docker compose build --no-cache
-          docker compose up -d
+          docker compose up -d --no-build
 
       - name: Verify deployment
         run: |
