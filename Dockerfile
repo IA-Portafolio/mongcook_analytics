@@ -13,7 +13,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY *.ts tsconfig.json ./
-COPY src/lib ./src/lib
+COPY src ./src
 COPY moongcook.db ./
 
 ENV NODE_ENV=production
