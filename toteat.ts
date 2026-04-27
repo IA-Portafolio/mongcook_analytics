@@ -11,6 +11,8 @@
  * Docs: https://developers.toteat.com/
  */
 
+import { PRODUCT_EMPAQUE_MAP } from "./src/product-empaque-map.ts";
+
 // ── Types ────────────────────────────────────────────────────────────
 
 /** Product within a Toteat order */
@@ -128,7 +130,7 @@ interface ToteatShiftStatusResponse {
 // Chow Fan / Chow Suey / Chow Mein / Arma tu Plato / Mong Express / Lo Nuevo
 // are DISHES inside "Platos Especiales", not families of their own.
 // Entradas / Bebidas / Adicionales fold into "Otros".
-const HIERARCHY_MAP: Record<string, ProductMapping> = {
+export const HIERARCHY_MAP: Record<string, ProductMapping> = {
   // Otros (entradas, bebidas, adicionales)
   'AB.010': { family: 'Otros', type: 'Complemento' },
 
@@ -200,6 +202,16 @@ export const PRODUCT_MAP: Record<string, ProductMapping> = {
   'COMC04': { family: 'Combos', type: 'Compartir' },
   'COMC06': { family: 'Combos', type: 'Compartir' },
   'COMC08': { family: 'Combos', type: 'Compartir' },
+
+  // IDs presentes en Toteat pero ausentes en "Nueva Base Toteat1.xlsx".
+  // Hasta que se agreguen al Excel, los clasificamos manualmente para que
+  // no caigan a "Otros" por el fallback. NO afectan cálculos de $ ni costos,
+  // solo a qué familia pertenece el producto en el dashboard.
+  'COMB14': { family: 'Combos', type: 'Personal' },     // Deditos de pollo (combo)
+  'prom102': { family: 'Combos', type: 'Compartir' },   // chow fan especial trio + papas
+  'RAPP05': { family: 'Bowl', type: 'Personal' },       // BOWL KUMO
+  'RAPP06': { family: 'Bowl', type: 'Personal' },       // BOWL TAO
+  'BEB60': { family: 'Otros', type: 'Complemento' },    // Fuze tea durazno 1.2L (probable typo de BEB600)
 };
 
 // ── Channel Detection ────────────────────────────────────────────────
@@ -343,11 +355,18 @@ export function buildOrderCacheRows(orders: ToteatOrder[]): CachedOrderSale[] {
 // ── Classify a product ───────────────────────────────────────────────
 
 function classifyProduct(product: ToteatProduct, customMap?: Record<string, ProductMapping>): ProductMapping {
-  // 1. Check product-level override (custom > built-in)
+  // 1. Request-specific override takes absolute priority.
   if (customMap?.[product.id]) return customMap[product.id];
+
+  // 2. Excel-driven mapping ("Nueva Base Toteat1.xlsx" → EMPAQUE column).
+  //    This is the source of truth maintained by operations: every known
+  //    Toteat product ID is classified here. See scripts/generate-product-map.cjs.
+  if (PRODUCT_EMPAQUE_MAP[product.id]) return PRODUCT_EMPAQUE_MAP[product.id];
+
+  // 3. Legacy hand-maintained overrides (trio/familiar/mega sizes etc.).
   if (PRODUCT_MAP[product.id]) return PRODUCT_MAP[product.id];
 
-  // 2. Check hierarchy mapping
+  // 4. Hierarchy-based mapping (fallback when product ID is unknown).
   if (HIERARCHY_MAP[product.hierarchyId]) return HIERARCHY_MAP[product.hierarchyId];
 
   // 3. Fallback: try to guess from hierarchy name

@@ -6,7 +6,9 @@ import { resolveDashboardDateRange, todayDate } from "./src/lib/dashboard-range.
 import { backfillToteatCache, getAutoSyncRange, syncToteatRange } from "./toteat-cache.ts";
 import {
   clampEndDateToLastClosedShift,
+  fetchToteatSalesChunked,
   fetchToteatShiftStatus,
+  HIERARCHY_MAP,
   importToteatSnapshot,
   PRODUCT_MAP,
   type ProductMapping,
@@ -345,6 +347,71 @@ async function startServer() {
   // Get current product mapping table
   app.get("/api/toteat/mapping", (req, res) => {
     res.json(PRODUCT_MAP);
+  });
+
+  // Diagnostic: list all Toteat hierarchies for a date range, with sample
+  // products. Useful to identify which hierarchyId should be mapped to
+  // families that don't appear in the dashboard (e.g. Cajas).
+  // Usage: GET /api/toteat/hierarchies?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+  app.get("/api/toteat/hierarchies", async (req, res) => {
+    const { startDate, endDate, useDevApi } = req.query;
+    if (!startDate || !endDate) {
+      res.status(400).json({ error: "startDate and endDate are required (YYYY-MM-DD)" });
+      return;
+    }
+
+    const config = getToteatConfig({ useDevApi: useDevApi === "true" });
+    try {
+      const orders = await fetchToteatSalesChunked(config, startDate as string, endDate as string);
+      const byHierarchy = new Map<
+        string,
+        { hierarchyId: string; hierarchyName: string; productCount: number; totalQuantity: number; totalSales: number; sampleProducts: Map<string, { id: string; name: string; qty: number }> }
+      >();
+
+      for (const order of orders) {
+        for (const product of order.products || []) {
+          const key = `${product.hierarchyId || ""}|${product.hierarchyName || ""}`;
+          const entry = byHierarchy.get(key) || {
+            hierarchyId: product.hierarchyId || "",
+            hierarchyName: product.hierarchyName || "",
+            productCount: 0,
+            totalQuantity: 0,
+            totalSales: 0,
+            sampleProducts: new Map(),
+          };
+          entry.productCount += 1;
+          entry.totalQuantity += product.quantity || 0;
+          entry.totalSales += product.payed || 0;
+
+          const pKey = `${product.id}|${product.name}`;
+          const sample = entry.sampleProducts.get(pKey) || { id: product.id, name: product.name, qty: 0 };
+          sample.qty += product.quantity || 0;
+          entry.sampleProducts.set(pKey, sample);
+
+          byHierarchy.set(key, entry);
+        }
+      }
+
+      const result = [...byHierarchy.values()]
+        .map((entry) => ({
+          hierarchyId: entry.hierarchyId,
+          hierarchyName: entry.hierarchyName,
+          productCount: entry.productCount,
+          totalQuantity: entry.totalQuantity,
+          totalSales: Math.round(entry.totalSales),
+          mapped: Boolean(entry.hierarchyId && HIERARCHY_MAP[entry.hierarchyId]),
+          mappedFamily: entry.hierarchyId ? HIERARCHY_MAP[entry.hierarchyId]?.family ?? null : null,
+          sampleProducts: [...entry.sampleProducts.values()]
+            .sort((a, b) => b.qty - a.qty)
+            .slice(0, 10),
+        }))
+        .sort((a, b) => b.totalSales - a.totalSales);
+
+      res.json({ dateRange: { startDate, endDate }, hierarchies: result });
+    } catch (error: any) {
+      console.error("hierarchies diagnostic error:", error);
+      res.status(502).json({ error: error.message || "Failed to fetch hierarchies" });
+    }
   });
 
   // Preview: fetch from Toteat without saving to DB
