@@ -31,10 +31,26 @@ jobs:
 
       - name: Verify deployment
         run: |
-          echo "Waiting for container to start..."
-          sleep 5
+          echo "Waiting for container health..."
+          for i in {1..18}; do
+            STATUS=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' mongcook-app 2>/dev/null || echo "missing")
+            RESTARTS=$(docker inspect -f '{{.RestartCount}}' mongcook-app 2>/dev/null || echo "0")
+            echo "Attempt $i: status=$STATUS restarts=$RESTARTS"
+            if [ "$STATUS" = "healthy" ] || [ "$STATUS" = "running" ]; then
+              break
+            fi
+            if [ "$STATUS" = "unhealthy" ] || [ "$STATUS" = "exited" ] || [ "$STATUS" = "dead" ] || [ "$STATUS" = "missing" ]; then
+              echo "Container failed to start"
+              docker logs --tail 200 mongcook-app || true
+              exit 1
+            fi
+            sleep 5
+          done
+
           docker compose ps
-          curl -sf http://localhost:3000/api/health || echo "Health check pending (container may still be starting)"
+          docker logs --tail 50 mongcook-app || true
+          curl -fsS https://moongcook.iaportafolio.com/api/health
+          curl -fsSI https://moongcook.iaportafolio.com/
 
       - name: Cleanup old images
         run: docker image prune -f
