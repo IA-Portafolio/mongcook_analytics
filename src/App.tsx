@@ -29,7 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { KpiSummary, ComparativeData, ChannelData, FilterState } from './types';
 import { buildDefaultFilterState } from './lib/dashboard-range';
-import { formatCurrency, formatPercent, cn, safeDivide } from './lib/utils';
+import { formatCurrency, formatPercent, formatCompact, cn, safeDivide } from './lib/utils';
 
 const CHANNEL_COLORS: Record<string, string> = {
   'Punto de Venta': '#272121',
@@ -42,11 +42,28 @@ const CHANNEL_COMMISSION: Record<string, number> = {
   'Rappi': 0.10, // 10% commission
 };
 
-// Format large numbers as compact (e.g. $1.2M)
-function formatCompact(value: number) {
-  if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(value) >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
-  return formatCurrency(value);
+function FamilyBarLabel({ x, y, width, value, index, items, total }: {
+  x?: number; y?: number; width?: number; value?: number; index?: number;
+  items: { family: string; sales: number; quantity: number }[];
+  total: number;
+}) {
+  if (x == null || y == null || width == null || value == null || index == null) return null;
+  const item = items[index];
+  if (!item) return null;
+  const inside = y < 28;
+  const fill = inside ? '#ffffff' : '#272121';
+  const amountY = inside ? y + 14 : y - 18;
+  const pctY = inside ? y + 26 : y - 6;
+  return (
+    <g>
+      <text x={x + width / 2} y={amountY} textAnchor="middle" fontSize={10} fill={fill} opacity={inside ? 0.95 : 0.7} fontWeight="700">
+        {formatCompact(value)}
+      </text>
+      <text x={x + width / 2} y={pctY} textAnchor="middle" fontSize={9} fill={fill} opacity={inside ? 0.85 : 0.45}>
+        {formatPercent(safeDivide(item.sales, total))}
+      </text>
+    </g>
+  );
 }
 
 // ── Toast System ─────────────────────────────────────────────────────
@@ -328,7 +345,7 @@ export default function App() {
               {activeTab === 'comparative2' && "Análisis por Canal"}
               {activeTab === 'byProduct' && "Análisis por Producto"}
             </h2>
-            <p className="text-sm opacity-60 mt-2">Monitoreo de desempeño del restaurante</p>
+            <p className="text-sm opacity-60 mt-2">Datos en vivo desde Toteat · montos en pesos colombianos (COP)</p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -529,10 +546,11 @@ const tooltipStyle = {
 function SummaryView({ summary, compData, channelData, productData }: { summary: KpiSummary | null, compData: ComparativeData[], channelData: ChannelData[], productData: ProductRow[] }) {
   if (!summary) return null;
 
-  const totalSales = summary.totalSales || 0;
+  const ventaBruta = summary.totalSales || 0;
   const totalTax = summary.totalTax || 0;
   const totalDiscount = Math.abs(summary.totalDiscount || 0);
-  const ventaNeta = totalSales - totalDiscount - totalTax;
+  const ingresos = ventaBruta - totalDiscount;
+  const ventaNeta = ingresos - totalTax;
   const marginPct = safeDivide(summary.totalMargin || 0, ventaNeta);
 
   const familyChartData = Object.values(
@@ -549,23 +567,38 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
     <div className="space-y-8">
       {/* KPI Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <KpiCard title="Ingresos Totales" value={formatCurrency(totalSales)} icon={<DollarSign size={20} />} />
+        <KpiCard
+          title="Ingresos Totales"
+          value={formatCurrency(ingresos)}
+          icon={<DollarSign size={20} />}
+          subtitle={`Venta bruta ${formatCurrency(ventaBruta)}`}
+        />
         <KpiCard title="Número de Órdenes" value={(summary.totalOrders ?? 0).toString()} icon={<Package size={20} />} subtitle="órdenes" />
         <KpiCard title="Costo de Ventas" value={formatCurrency(summary.totalCost || 0)} icon={<TrendingUp size={20} />} />
         <KpiCard title="Margen Neto" value={formatCurrency(summary.totalMargin || 0)} icon={<TrendingUp size={20} />} subtitle={formatPercent(marginPct)} />
-        <KpiCard title="Descuentos" value={formatCurrency(totalDiscount)} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(totalDiscount, totalSales))} />
+        <KpiCard title="Descuentos" value={formatCurrency(totalDiscount)} icon={<Tag size={20} />} subtitle={formatPercent(safeDivide(totalDiscount, ventaBruta))} />
       </div>
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 bg-white/50 border border-[#272121]/10 rounded-2xl p-6 backdrop-blur-sm">
-          <h3 className="font-bold text-xl mb-6">Distribución por Familia</h3>
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-1 mb-6">
+            <h3 className="font-bold text-xl">Distribución por Familia</h3>
+            <p className="text-[11px] font-mono opacity-50">Después de descuentos</p>
+          </div>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={familyChartData} barSize={40}>
+              <BarChart data={familyChartData} barSize={40} margin={{ top: 28, right: 8, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
                 <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
-                <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  fontSize={11}
+                  tick={{ fill: '#272121', opacity: 0.4 }}
+                  tickFormatter={v => formatCompact(v)}
+                  domain={[0, (max: number) => max * 1.18]}
+                />
                 <Tooltip
                   cursor={{ fill: '#272121', opacity: 0.05 }}
                   content={({ active, payload }) => {
@@ -581,7 +614,7 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                           </p>
                           <p className="flex justify-between gap-4">
                             <span className="opacity-60">Cantidad</span>
-                            <span className="font-mono font-bold">{d.quantity.toLocaleString('es-CL')} uds</span>
+                            <span className="font-mono font-bold">{d.quantity.toLocaleString('es-CO')} uds</span>
                           </p>
                           <p className="flex justify-between gap-4">
                             <span className="opacity-60">Participación</span>
@@ -594,25 +627,22 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                 />
                 <Bar dataKey="sales" fill="#272121" radius={[6, 6, 0, 0]}>
                   <LabelList
-                    content={(props: any) => {
-                      const { x, y, width, value, index } = props;
-                      const item = familyChartData[index];
-                      if (!item) return null;
-                      return (
-                        <g>
-                          <text x={x + width / 2} y={y - 18} textAnchor="middle" fontSize={10} fill="#272121" opacity={0.55} fontWeight="600">
-                            {formatCompact(value)}
-                          </text>
-                          <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={9} fill="#272121" opacity={0.38}>
-                            {formatPercent(safeDivide(item.sales, totalFamilySales))}
-                          </text>
-                        </g>
-                      );
-                    }}
+                    content={(props: any) => (
+                      <FamilyBarLabel {...props} items={familyChartData} total={totalFamilySales} />
+                    )}
                   />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          </div>
+          <div className="mt-4 pt-3 border-t border-[#272121]/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 text-sm">
+            <span className="font-medium">Total familias</span>
+            <span className="font-mono font-bold">
+              {formatCurrency(totalFamilySales)}
+              <span className="opacity-40 font-normal ml-2">
+                {formatPercent(safeDivide(totalFamilySales, ingresos))} de los ingresos
+              </span>
+            </span>
           </div>
         </div>
 
@@ -768,7 +798,10 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
 
         return (
           <div>
-            <h3 className="font-bold text-xl mb-6">Mejor Producto por Familia</h3>
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-1 mb-6">
+              <h3 className="font-bold text-xl">Mejor Producto por Familia</h3>
+              <p className="text-[11px] font-mono opacity-50">Ventas después de descuentos · pesos colombianos</p>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {topByFamily.map(({ family, top, topThree, totalSales, totalQty, totalMargin, productCount }) => {
                 const color = familyColors[family] || '#272121';
@@ -796,6 +829,10 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                           <p className="text-[11px] font-mono opacity-50 mt-1">{top.quantity} uds · Margen {formatPercent(safeDivide(top.sales - top.cost, top.sales))}</p>
                         </div>
                       )}
+                      <div className="flex items-center justify-between text-[10px] uppercase tracking-widest opacity-40 font-mono mb-2">
+                        <span>Top de la familia</span>
+                        <span>% familia</span>
+                      </div>
                       <div className="space-y-2">
                         {topThree.map((p, i) => {
                           const pct = safeDivide(p.sales, totalSales);
@@ -807,7 +844,8 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                                  <Medal size={12} className="text-amber-700" />}
                               </span>
                               <span className="text-xs truncate flex-1">{p.product_name}</span>
-                              <span className="font-mono text-[10px] font-bold">{formatPercent(pct)}</span>
+                              <span className="font-mono text-[10px] opacity-50 hidden sm:inline">{formatCurrency(p.sales)}</span>
+                              <span className="font-mono text-[10px] font-bold w-12 text-right">{formatPercent(pct)}</span>
                             </div>
                           );
                         })}
@@ -815,21 +853,38 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                       <div className="mt-4 pt-3 border-t border-[#272121]/5 grid grid-cols-3 gap-2">
                         <div>
                           <p className="text-[10px] uppercase tracking-widest opacity-40 font-mono">Ventas</p>
-                          <p className="text-sm font-bold">{formatCompact(totalSales)}</p>
+                          <p className="text-sm font-bold tracking-tight">{formatCurrency(totalSales)}</p>
                         </div>
                         <div>
                           <p className="text-[10px] uppercase tracking-widest opacity-40 font-mono">Cant</p>
-                          <p className="text-sm font-bold">{totalQty}</p>
+                          <p className="text-sm font-bold">{totalQty.toLocaleString('es-CO')}</p>
                         </div>
                         <div>
                           <p className="text-[10px] uppercase tracking-widest opacity-40 font-mono">Margen</p>
-                          <p className="text-sm font-bold">{formatCompact(totalMargin)}</p>
+                          <p className="text-sm font-bold tracking-tight">{formatCurrency(totalMargin)}</p>
                         </div>
                       </div>
                     </div>
                   </motion.div>
                 );
               })}
+            </div>
+            <div className="mt-4 bg-white/50 border border-[#272121]/10 rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <span className="text-sm font-medium">Total de las {topByFamily.length} familias</span>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 font-mono text-sm">
+                <span>
+                  <span className="opacity-40 mr-2">Ventas</span>
+                  <span className="font-bold">{formatCurrency(topByFamily.reduce((a, f) => a + f.totalSales, 0))}</span>
+                </span>
+                <span>
+                  <span className="opacity-40 mr-2">Cant</span>
+                  <span className="font-bold">{topByFamily.reduce((a, f) => a + f.totalQty, 0).toLocaleString('es-CO')}</span>
+                </span>
+                <span>
+                  <span className="opacity-40 mr-2">Margen</span>
+                  <span className="font-bold">{formatCurrency(topByFamily.reduce((a, f) => a + f.totalMargin, 0))}</span>
+                </span>
+              </div>
             </div>
           </div>
         );
@@ -853,16 +908,19 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
   const totalCost = data.reduce((a, c) => a + c.cost, 0);
   const avgMargin = safeDivide(totalSales - totalCost, totalSales);
 
-  const families = [...new Set(data.filter(d => d.is_personal !== -1).map(d => d.family))];
+  const families = [...new Set(data.map(d => d.family))];
+  const hasComplementos = data.some(d => d.is_personal === -1 && d.sales > 0);
   const chartData = families.map(family => {
     const p = personal.find(d => d.family === family);
     const np = nonPersonal.find(d => d.family === family);
+    const complementos = data.find(d => d.family === family && d.is_personal === -1);
     return {
       family,
       Personal: p?.sales || 0,
       'Para Compartir': np?.sales || 0,
+      Complementos: complementos?.sales || 0,
     };
-  }).sort((a, b) => (a.Personal + a['Para Compartir']) - (b.Personal + b['Para Compartir']));
+  }).sort((a, b) => (a.Personal + a['Para Compartir'] + a.Complementos) - (b.Personal + b['Para Compartir'] + b.Complementos));
 
   return (
     <div className="space-y-8">
@@ -899,9 +957,9 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard
           title="Total Ventas"
-          value={formatCurrency(totalPersonalSales + totalNonPersonalSales)}
+          value={formatCurrency(totalSales)}
           icon={<DollarSign size={20} />}
-          subtitle="Personales + Compartir"
+          subtitle="Incluye complementos"
         />
         <KpiCard
           title="Total Personales"
@@ -921,13 +979,21 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
 
       {/* Grouped Bar Chart */}
       <div className="bg-white/50 border border-[#272121]/10 rounded-2xl p-6 backdrop-blur-sm">
-        <h3 className="font-bold text-xl mb-6">Ventas por Familia — Personal vs Compartir</h3>
+        <h3 className="font-bold text-xl mb-1">Ventas por Familia — Personal vs Compartir</h3>
+        <p className="text-[11px] font-mono opacity-50 mb-6">Después de descuentos · pesos colombianos</p>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} barGap={4}>
+            <BarChart data={chartData} barGap={4} margin={{ top: 28, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
               <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
-              <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                fontSize={11}
+                tick={{ fill: '#272121', opacity: 0.4 }}
+                tickFormatter={v => formatCompact(v)}
+                domain={[0, (max: number) => max * 1.18]}
+              />
               <Tooltip
                 cursor={{ fill: '#272121', opacity: 0.05 }}
                 contentStyle={tooltipStyle}
@@ -935,13 +1001,22 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
               />
               <Legend />
               <Bar dataKey="Personal" fill="#272121" radius={[6, 6, 0, 0]}>
-                <LabelList dataKey="Personal" position="top" fontSize={10} fill="#272121" opacity={0.4} formatter={(v: number) => formatCompact(v)} />
+                <LabelList dataKey="Personal" position="top" fontSize={10} fill="#272121" opacity={0.55} formatter={(v: number) => v ? formatCompact(v) : ''} />
               </Bar>
               <Bar dataKey="Para Compartir" fill="#ff0024" radius={[6, 6, 0, 0]}>
-                <LabelList dataKey="Para Compartir" position="top" fontSize={10} fill="#ff0024" opacity={0.7} formatter={(v: number) => formatCompact(v)} />
+                <LabelList dataKey="Para Compartir" position="top" fontSize={10} fill="#ff0024" opacity={0.75} formatter={(v: number) => v ? formatCompact(v) : ''} />
               </Bar>
+              {hasComplementos && (
+                <Bar dataKey="Complementos" fill="#64748b" radius={[6, 6, 0, 0]}>
+                  <LabelList dataKey="Complementos" position="top" fontSize={10} fill="#64748b" opacity={0.75} formatter={(v: number) => v ? formatCompact(v) : ''} />
+                </Bar>
+              )}
             </BarChart>
           </ResponsiveContainer>
+        </div>
+        <div className="mt-4 pt-3 border-t border-[#272121]/10 flex items-center justify-between text-sm">
+          <span className="font-medium">Total</span>
+          <span className="font-mono font-bold">{formatCurrency(totalSales)}</span>
         </div>
       </div>
 
@@ -994,7 +1069,7 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
                   const isExpanded = expandedRow === row.label;
 
                   // Build per-family breakdown for expanded view
-                  const familyBreakdown = row.familyData ? families.map(family => {
+                  const familyBreakdown = row.familyData ? families.filter(family => personal.some(d => d.family === family) || nonPersonal.some(d => d.family === family)).map(family => {
                     const pRow = personal.find(d => d.family === family);
                     const npRow = nonPersonal.find(d => d.family === family);
                     return {
@@ -1453,10 +1528,10 @@ function ChannelView({ data }: { data: ChannelData[] }) {
         <h3 className="font-bold text-xl mb-6">Ventas por Familia</h3>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData.map(d => ({ family: d.family, sales: d._total }))} barSize={40}>
+            <BarChart data={chartData.map(d => ({ family: d.family, sales: d._total }))} barSize={40} margin={{ top: 28, right: 8, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#272121" strokeOpacity={0.05} />
               <XAxis dataKey="family" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.6 }} />
-              <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
+              <YAxis axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} domain={[0, (max: number) => max * 1.18]} />
               <Tooltip
                 cursor={{ fill: '#272121', opacity: 0.05 }}
                 contentStyle={tooltipStyle}

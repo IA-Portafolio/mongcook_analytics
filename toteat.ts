@@ -87,8 +87,8 @@ export interface NormalizedSale {
   family: string;
   channel: string;
   quantity: number;
-  total_price: number;  // netPrice - discounts (bruta con IVA, después de descuentos)
-  total_tax: number;    // IVA del producto (ya incluido en total_price)
+  total_price: number;  // product.payed: cobrado, con impuesto, después de descuentos
+  total_tax: number;    // impuesto embebido en total_price (INC 8% en Colombia)
   total_cost: number;
   total_discount: number;
   is_personal: number; // 1 = Personal, 0 = Compartir, -1 = Complemento (no aplica)
@@ -329,21 +329,24 @@ export function buildOrderCacheRows(orders: ToteatOrder[]): CachedOrderSale[] {
       const primaryOrder = events.reduce((best, candidate) => pickPreferredOrder(best, candidate));
       const totalSales = events.reduce((sum, event) => sum + (event.total || 0), 0);
       const totalTax = events.reduce((sum, event) => sum + (event.taxes || 0), 0);
-      const totalDiscount = events.reduce((sum, event) => sum + Math.abs(event.discounts || 0), 0);
+      // Toteat sends discounts as a signed number (negative on sales, positive when an NC reverses one).
+      // Net first, then take the absolute value so a sale+NC pair does not double-count.
+      const netDiscount = events.reduce((sum, event) => sum + (event.discounts || 0), 0);
       const totalCost = events.reduce((sum, event) => sum + orderProductCost(event), 0);
       const hasCreditNote = events.some(
         (event) => event.fiscalType === "NC" || (event.total || 0) < 0 || (event.payed || 0) < 0,
       );
+      const fullyCredited = hasCreditNote && Math.abs(totalSales) < 0.005;
 
       return {
         order_id: orderId,
         date: orderDate(primaryOrder),
         channel: detectChannel(primaryOrder),
         total_sales: totalSales,
-        total_tax: totalTax,
-        total_discount: totalDiscount,
-        total_cost: totalCost,
-        counts_as_order: hasCreditNote && Math.abs(totalSales) < 0.005 ? 0 : 1,
+        total_tax: fullyCredited ? 0 : totalTax,
+        total_discount: fullyCredited ? 0 : Math.abs(netDiscount),
+        total_cost: fullyCredited ? 0 : totalCost,
+        counts_as_order: fullyCredited ? 0 : 1,
       };
     })
     .sort((left, right) => {
@@ -547,10 +550,12 @@ export async function fetchToteatSalesChunked(
 export function normalizeSales(
   orders: ToteatOrder[],
   customMap?: Record<string, ProductMapping>,
+  excludedOrderIds?: Set<string>,
 ): NormalizedSale[] {
   const results: NormalizedSale[] = [];
 
   for (const order of dedupeOrderEvents(orders)) {
+    if (excludedOrderIds?.has(String(order.orderId))) continue;
     const channel = detectChannel(order);
     const date = orderDate(order);
 
@@ -561,9 +566,12 @@ export function normalizeSales(
       const mapping = classifyProduct(product, customMap);
 
       const discount = product.discounts || 0;
-      // product.payed = amount customer paid for this product (post-discount, with IVA).
-      // sum(product.payed) = order.total + order.discounts = "Total Venta Bruta" del dashboard Toteat.
-      // product.taxes = IVA embebido en payed (para calcular Venta Neta = payed - taxes).
+      // Toteat field mapping (Colombia, INC 8% incluido en el precio):
+      //   order.total            = 1.ª "Total Venta Bruta" (antes de descuentos, con impuesto)
+      //   order.discounts        = negativo en ventas; 1.ª línea menos esta = 2.ª "Total Venta Bruta"
+      //   product.payed          = cobrado por el producto (después de descuentos, con impuesto)
+      //   sum(product.payed)     = 2.ª "Total Venta Bruta" del resumen Toteat
+      //   product.taxes          = impuesto embebido en payed
       results.push({
         order_id: String(order.orderId),
         date,
@@ -602,9 +610,13 @@ export async function importToteatSnapshot(
   customMap?: Record<string, ProductMapping>,
 ): Promise<ToteatImportSnapshot> {
   const orders = await fetchToteatSalesChunked(config, startDate, endDate);
+  const orderRows = buildOrderCacheRows(orders);
+  const excludedOrderIds = new Set(
+    orderRows.filter((row) => row.counts_as_order === 0).map((row) => row.order_id),
+  );
 
   return {
-    productRows: normalizeSales(orders, customMap),
-    orderRows: buildOrderCacheRows(orders),
+    productRows: normalizeSales(orders, customMap, excludedOrderIds),
+    orderRows,
   };
 }
