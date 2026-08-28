@@ -1,6 +1,9 @@
 import type { SQLiteDatabase } from "./db.ts";
-import type { ProductMapping, ToteatConfig, ToteatImportSnapshot } from "./toteat.ts";
+import type { CachedOrderSale, NormalizedSale, ProductMapping, ToteatConfig, ToteatImportSnapshot } from "./toteat.ts";
 import { importToteatSnapshot } from "./toteat.ts";
+
+/** Bump when product-family classification rules change so stale SQLite rows are not reused. */
+export const SNAPSHOT_CLASSIFICATION_VERSION = 4;
 
 export interface SyncRangeOptions {
   startDate: string;
@@ -143,6 +146,114 @@ export function replaceSalesCacheRange(
   });
 
   tx();
+}
+
+export function snapshotRangeKey(startDate: string, endDate: string, version = SNAPSHOT_CLASSIFICATION_VERSION) {
+  return `${startDate}:${endDate}:v${version}`;
+}
+
+export function rememberSnapshotRange(
+  database: SQLiteDatabase,
+  startDate: string,
+  endDate: string,
+  version = SNAPSHOT_CLASSIFICATION_VERSION,
+) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
+      range_key TEXT PRIMARY KEY,
+      classification_version INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    )
+  `);
+  database.prepare(`
+    INSERT INTO snapshot_cache_meta (range_key, classification_version, start_date, end_date, fetched_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(range_key) DO UPDATE SET
+      classification_version = excluded.classification_version,
+      fetched_at = excluded.fetched_at
+  `).run(snapshotRangeKey(startDate, endDate, version), version, startDate, endDate, new Date().toISOString());
+}
+
+export function loadCachedSnapshot(
+  database: SQLiteDatabase,
+  startDate: string,
+  endDate: string,
+  options: { allowStaleCurrentMonth?: boolean } = {},
+): ToteatImportSnapshot | null {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
+      range_key TEXT PRIMARY KEY,
+      classification_version INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    )
+  `);
+
+  const meta = database.prepare(
+    `SELECT classification_version, fetched_at FROM snapshot_cache_meta WHERE range_key = ?`,
+  ).get(snapshotRangeKey(startDate, endDate)) as { classification_version: number; fetched_at: string } | undefined;
+
+  if (!meta || meta.classification_version !== SNAPSHOT_CLASSIFICATION_VERSION) {
+    return null;
+  }
+
+  const isClosedRange = endDate < todayDate();
+  if (!isClosedRange && !options.allowStaleCurrentMonth) {
+    const ageMs = Date.now() - Date.parse(meta.fetched_at);
+    if (!Number.isFinite(ageMs) || ageMs > 15 * 60 * 1000) return null;
+  }
+
+  const productRows = database.prepare(
+    `
+      SELECT
+        COALESCE(order_id, '') as order_id,
+        date,
+        product_name,
+        family,
+        channel,
+        quantity,
+        total_price,
+        COALESCE(total_tax, 0) as total_tax,
+        total_cost,
+        COALESCE(total_discount, 0) as total_discount,
+        is_personal
+      FROM sales_data
+      WHERE date BETWEEN ? AND ?
+    `,
+  ).all(startDate, endDate) as NormalizedSale[];
+
+  const orderRows = database.prepare(
+    `
+      SELECT
+        order_id,
+        date,
+        channel,
+        total_sales,
+        COALESCE(total_tax, 0) as total_tax,
+        COALESCE(total_discount, 0) as total_discount,
+        COALESCE(total_cost, 0) as total_cost,
+        COALESCE(counts_as_order, 1) as counts_as_order
+      FROM sales_orders
+      WHERE date BETWEEN ? AND ?
+    `,
+  ).all(startDate, endDate) as CachedOrderSale[];
+
+  if (productRows.length === 0 && orderRows.length === 0) return null;
+
+  return { productRows, orderRows };
+}
+
+export function persistAnalyticsSnapshot(
+  database: SQLiteDatabase,
+  snapshot: ToteatImportSnapshot,
+  startDate: string,
+  endDate: string,
+) {
+  replaceSalesCacheRange(database, snapshot, { startDate, endDate, clearExisting: true });
+  rememberSnapshotRange(database, startDate, endDate);
 }
 
 export async function syncToteatRange(

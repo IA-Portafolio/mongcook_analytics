@@ -2,10 +2,12 @@
 /**
  * Generates src/product-empaque-map.ts from "Nueva Base Toteat1.xlsx".
  *
- * Source of truth: sheet "VENTAS X UND. NEG.", columns:
- *   - ID        → Toteat product ID
- *   - EMPAQUE   → family (Caja, Combo, Bowl, Platos Especiales, Adición, Bebidas, Otro)
- *   - TIPO      → Personal | No Personal (rest → Complemento)
+ * Source of truth: sheet "Jer-Tip-Emp" (catalogo de familias), with
+ * hierarchy-aware corrections requested by operations:
+ *   - Jerarquia "Arma tu plato" → family "Arma tu plato" (not Cajas)
+ *   - Jerarquia "Platos mong"   → family "Cajas" (Chow Fan trio is NOT a plato especial)
+ *   - Jerarquia "Platos especiales" → family "Platos Especiales"
+ *   - Familia Caja/Combo/Bowl/Adición/Bebidas/Otro otherwise
  *
  * Run: node scripts/generate-product-map.cjs
  */
@@ -16,13 +18,14 @@ const path = require("path");
 const XLSX_PATH = path.resolve(__dirname, "..", "Nueva Base Toteat1.xlsx");
 const OUT_PATH = path.resolve(__dirname, "..", "src", "product-empaque-map.ts");
 
-const FAMILY_FROM_EMPAQUE = {
+const FAMILY_FROM_FAMILIA = {
   Caja: "Cajas",
   Combo: "Combos",
   Bowl: "Bowl",
   "Platos Especiales": "Platos Especiales",
   "Platos especiales": "Platos Especiales",
-  "Adición": "Otros",
+  Adición: "Otros",
+  Adicion: "Otros",
   Bebidas: "Otros",
   Otro: "Otros",
 };
@@ -32,30 +35,57 @@ const TYPE_FROM_TIPO = {
   "No Personal": "Compartir",
 };
 
+function canonicalFamily(familia, jerarquia) {
+  const jer = String(jerarquia || "").trim().toLowerCase();
+  if (jer === "arma tu plato") return "Arma tu plato";
+  if (jer === "platos mong") return "Cajas";
+  if (jer === "platos especiales") return "Platos Especiales";
+
+  const family = FAMILY_FROM_FAMILIA[String(familia || "").trim()];
+  return family || "Otros";
+}
+
+function canonicalType(tipo) {
+  return TYPE_FROM_TIPO[String(tipo || "").trim()] || "Complemento";
+}
+
 const wb = XLSX.readFile(XLSX_PATH);
-const rows = XLSX.utils.sheet_to_json(wb.Sheets["VENTAS X UND. NEG."], { defval: null });
+const jerRows = XLSX.utils.sheet_to_json(wb.Sheets["Jer-Tip-Emp"], { defval: null });
+const ventasRows = XLSX.utils.sheet_to_json(wb.Sheets["VENTAS X UND. NEG."], { defval: null });
 
 const mapping = {};
-const unknownEmpaque = new Set();
+const unknownFamilia = new Set();
 
-for (const row of rows) {
-  const id = (row[" ID "] || "").toString().trim();
-  const empaque = (row[" EMPAQUE "] || "").toString().trim();
-  const tipo = (row[" TIPO "] || "").toString().trim();
-  if (!id || !empaque) continue;
-  if (mapping[id]) continue;
-
-  const family = FAMILY_FROM_EMPAQUE[empaque];
-  if (!family) unknownEmpaque.add(empaque);
-
+for (const row of jerRows) {
+  const id = String(row["ID Producto **"] || "").trim();
+  if (!id || mapping[id]) continue;
+  const familia = String(row["Familia"] || "").trim();
+  const jerarquia = String(row["Jerarquia"] || "").trim();
+  const tipo = String(row["Tipo_1"] || row["Tipo"] || "").trim();
+  if (familia && !FAMILY_FROM_FAMILIA[familia] && !/arma tu plato|platos mong|platos especiales/i.test(jerarquia)) {
+    unknownFamilia.add(familia);
+  }
   mapping[id] = {
-    family: family || "Otros",
-    type: TYPE_FROM_TIPO[tipo] || "Complemento",
+    family: canonicalFamily(familia, jerarquia),
+    type: canonicalType(tipo),
   };
 }
 
-if (unknownEmpaque.size) {
-  console.warn("Unknown empaque values (defaulted to Otros):", [...unknownEmpaque]);
+// Fill any IDs that only appear in the sales sheet.
+for (const row of ventasRows) {
+  const id = String(row[" ID "] || "").trim();
+  if (!id || mapping[id]) continue;
+  const empaque = String(row[" EMPAQUE "] || "").trim();
+  const jerarquia = String(row[" JERARQUIA "] || "").trim();
+  const tipo = String(row[" TIPO "] || "").trim();
+  mapping[id] = {
+    family: canonicalFamily(empaque, jerarquia),
+    type: canonicalType(tipo),
+  };
+}
+
+if (unknownFamilia.size) {
+  console.warn("Unknown familia values (defaulted to Otros):", [...unknownFamilia]);
 }
 
 const familyCounts = {};
@@ -71,11 +101,11 @@ const body = sortedEntries
   .join("\n");
 
 const header =
-  "// AUTO-GENERATED from \"Nueva Base Toteat1.xlsx\" (sheet: VENTAS X UND. NEG.).\n" +
+  "// AUTO-GENERATED from \"Nueva Base Toteat1.xlsx\" (sheet: Jer-Tip-Emp).\n" +
   "// Do NOT edit by hand. Regenerate with: node scripts/generate-product-map.cjs\n" +
   "//\n" +
-  "// Maps every Toteat product ID to its canonical family (derived from the\n" +
-  "// \"EMPAQUE\" column) and its is_personal type (derived from \"TIPO\").\n\n" +
+  "// Maps every Toteat product ID to its canonical family (Jerarquia-aware:\n" +
+  "// Arma tu plato, Platos mong → Cajas, Platos especiales) and is_personal type.\n\n" +
   "import type { ProductMapping } from \"../toteat.ts\";\n\n" +
   "export const PRODUCT_EMPAQUE_MAP: Record<string, ProductMapping> = {\n";
 

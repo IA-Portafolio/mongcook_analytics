@@ -3,7 +3,7 @@ import { createServer as createViteServer } from "vite";
 import { buildChannelMetrics, buildComparativeTypeMetrics, buildProductMetrics, summarizeSnapshot } from "./analytics.ts";
 import db from "./db.ts";
 import { resolveDashboardDateRange, todayDate } from "./src/lib/dashboard-range.ts";
-import { backfillToteatCache, getAutoSyncRange, syncToteatRange } from "./toteat-cache.ts";
+import { backfillToteatCache, getAutoSyncRange, loadCachedSnapshot, persistAnalyticsSnapshot, syncToteatRange } from "./toteat-cache.ts";
 import {
   clampEndDateToLastClosedShift,
   fetchToteatSalesChunked,
@@ -27,22 +27,28 @@ async function startServer() {
     res.json({ status: "ok", db: "connected" });
   });
 
-  // Normalize legacy family names in the DB into the 5 canonical families:
-  // Combos, Cajas, Platos Especiales, Bowl, Otros.
+  // Normalize legacy family names in the DB into the canonical families:
+  // Combos, Cajas, Arma tu plato, Platos Especiales, Bowl, Otros.
   // Runs once at startup and is exposed as an endpoint for manual re-run.
   function normalizeFamilies() {
     const run = db.transaction(() => {
-      // Combos: any legacy singular/plural variant
       db.prepare("UPDATE sales_data SET family='Combos' WHERE family IN ('Combo','combos','combo')").run();
-      // Cajas: legacy singular → plural canonical
-      db.prepare("UPDATE sales_data SET family='Cajas' WHERE family IN ('Caja','cajas','caja')").run();
-      // Bowl: drop the 's'
+      db.prepare("UPDATE sales_data SET family='Cajas' WHERE family IN ('Caja','cajas','caja','Chow Fan','Chow Suey','Chow Mein','Mong Express','Platos mong')").run();
       db.prepare("UPDATE sales_data SET family='Bowl' WHERE family IN ('Bowls','bowl','bowls')").run();
-      // Platos Especiales: fold Chow Fan/Suey/Mein + Arma tu Plato + Mong Express + Lo Nuevo
+      db.prepare("UPDATE sales_data SET family='Arma tu plato' WHERE family IN ('Arma tu Plato','arma tu plato')").run();
       db.prepare(`UPDATE sales_data SET family='Platos Especiales'
-        WHERE family IN ('Chow Fan','Chow Suey','Chow Mein','Arma tu Plato','Mong Express','Lo Nuevo','platos especiales')`).run();
-      // Otros: fold Entradas/Bebidas/Adicionales and the singular 'Otro'
-      db.prepare("UPDATE sales_data SET family='Otros' WHERE family IN ('Otro','Entradas','Bebidas','Adicionales','otros','otro')").run();
+        WHERE family IN ('platos especiales','Lo Nuevo')`).run();
+      db.prepare(`
+        UPDATE sales_data SET family='Cajas'
+        WHERE family='Platos Especiales'
+          AND product_name NOT LIKE 'COMBO%'
+          AND (
+            lower(product_name) LIKE '%chow fan%'
+            OR lower(product_name) LIKE '%chow mein%'
+            OR lower(product_name) LIKE '%chop suey%'
+          )
+      `).run();
+      db.prepare("UPDATE sales_data SET family='Otros' WHERE family IN ('Otro','Entradas','Bebidas','Adicionales','Adición','Adicion','otros','otro')").run();
     });
     run();
   }
@@ -129,11 +135,24 @@ async function startServer() {
       return existing.inFlight;
     }
 
+    const cached = loadCachedSnapshot(db, startDate, endDate);
+    if (cached) {
+      const ttlMs = endDate < todayDate() ? 12 * 60 * 60 * 1000 : 15 * 60 * 1000;
+      analyticsSnapshotCache.set(key, { value: cached, expiresAt: Date.now() + ttlMs, inFlight: null });
+      return cached;
+    }
+
     const inFlight = importToteatSnapshot(getToteatConfig(), startDate, endDate)
       .then((snapshot) => {
+        try {
+          persistAnalyticsSnapshot(db, snapshot, startDate, endDate);
+        } catch (error: any) {
+          console.warn("[snapshot-cache] Failed to persist Toteat snapshot:", error?.message || error);
+        }
+        const ttlMs = endDate < todayDate() ? 12 * 60 * 60 * 1000 : 15 * 60 * 1000;
         analyticsSnapshotCache.set(key, {
           value: snapshot,
-          expiresAt: Date.now() + 5 * 60 * 1000,
+          expiresAt: Date.now() + ttlMs,
           inFlight: null,
         });
         return snapshot;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LabelList
@@ -41,6 +41,16 @@ const CHANNEL_COLORS: Record<string, string> = {
 const CHANNEL_COMMISSION: Record<string, number> = {
   'Rappi': 0.10, // 10% commission
 };
+
+function chartCurrencyFormatter(value: number | undefined) {
+  return formatCurrency(value ?? 0);
+}
+
+function chartCompactLabel(label: unknown) {
+  const n = typeof label === 'number' ? label : Number(label);
+  if (!Number.isFinite(n) || n === 0) return '';
+  return formatCompact(n);
+}
 
 function FamilyBarLabel({ x, y, width, value, index, items, total }: {
   x?: number; y?: number; width?: number; value?: number; index?: number;
@@ -142,8 +152,13 @@ export default function App() {
   const hasData = summary && (summary.totalSales || summary.totalQuantity);
   const availableFamilies = [...new Set([...compData.map(d => d.family), ...channelData.map(d => d.family)])].sort();
 
+  const hasDataRef = useRef(false);
+  hasDataRef.current = Boolean(hasData);
+
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    // Keep the current dashboard on screen if we already have data.
+    // Switching to Excel and back must not unmount the view or refetch from Toteat.
+    if (!hasDataRef.current) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.set('startDate', filters.startDate);
@@ -177,22 +192,6 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    const refreshIfVisible = () => {
-      if (document.visibilityState === 'visible') {
-        fetchData();
-      }
-    };
-
-    window.addEventListener('focus', refreshIfVisible);
-    document.addEventListener('visibilitychange', refreshIfVisible);
-
-    return () => {
-      window.removeEventListener('focus', refreshIfVisible);
-      document.removeEventListener('visibilitychange', refreshIfVisible);
-    };
   }, [fetchData]);
 
   const seedData = async () => {
@@ -679,7 +678,7 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                         <Cell fill="#ff0024" />
                         {otrosSales > 0 && <Cell fill="#64748b" />}
                       </Pie>
-                      <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
@@ -794,7 +793,10 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
           const totalFamilyQty = products.reduce((a, c) => a + c.quantity, 0);
           const totalFamilyCost = products.reduce((a, c) => a + c.cost, 0);
           return { family, top: products[0] || null, topThree: products.slice(0, 3), totalSales: totalFamilySales, totalQty: totalFamilyQty, totalMargin: totalFamilySales - totalFamilyCost, productCount: products.length };
-        });
+        }).sort((a, b) => b.totalSales - a.totalSales);
+        const allFamiliesSales = topByFamily.reduce((a, f) => a + f.totalSales, 0);
+        const allFamiliesQty = topByFamily.reduce((a, f) => a + f.totalQty, 0);
+        const allFamiliesMargin = topByFamily.reduce((a, f) => a + f.totalMargin, 0);
 
         return (
           <div>
@@ -869,20 +871,25 @@ function SummaryView({ summary, compData, channelData, productData }: { summary:
                 );
               })}
             </div>
-            <div className="mt-4 bg-white/50 border border-[#272121]/10 rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <span className="text-sm font-medium">Total de las {topByFamily.length} familias</span>
+            <div className="mt-4 bg-[#272121] text-[#d1d0d1] rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium">Suma de las {topByFamily.length} familias</p>
+                <p className="text-[11px] font-mono opacity-50 mt-0.5">
+                  Debe coincidir con los ingresos del período ({formatCurrency(ingresos)})
+                </p>
+              </div>
               <div className="flex flex-wrap items-center gap-x-6 gap-y-1 font-mono text-sm">
                 <span>
-                  <span className="opacity-40 mr-2">Ventas</span>
-                  <span className="font-bold">{formatCurrency(topByFamily.reduce((a, f) => a + f.totalSales, 0))}</span>
+                  <span className="opacity-50 mr-2">Ventas</span>
+                  <span className="font-bold">{formatCurrency(allFamiliesSales)}</span>
                 </span>
                 <span>
-                  <span className="opacity-40 mr-2">Cant</span>
-                  <span className="font-bold">{topByFamily.reduce((a, f) => a + f.totalQty, 0).toLocaleString('es-CO')}</span>
+                  <span className="opacity-50 mr-2">Cant</span>
+                  <span className="font-bold">{allFamiliesQty.toLocaleString('es-CO')}</span>
                 </span>
                 <span>
-                  <span className="opacity-40 mr-2">Margen</span>
-                  <span className="font-bold">{formatCurrency(topByFamily.reduce((a, f) => a + f.totalMargin, 0))}</span>
+                  <span className="opacity-50 mr-2">Margen</span>
+                  <span className="font-bold">{formatCurrency(allFamiliesMargin)}</span>
                 </span>
               </div>
             </div>
@@ -997,18 +1004,18 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
               <Tooltip
                 cursor={{ fill: '#272121', opacity: 0.05 }}
                 contentStyle={tooltipStyle}
-                formatter={(value: number) => formatCurrency(value)}
+                formatter={chartCurrencyFormatter}
               />
               <Legend />
               <Bar dataKey="Personal" fill="#272121" radius={[6, 6, 0, 0]}>
-                <LabelList dataKey="Personal" position="top" fontSize={10} fill="#272121" opacity={0.55} formatter={(v: number) => v ? formatCompact(v) : ''} />
+                <LabelList dataKey="Personal" position="top" fontSize={10} fill="#272121" opacity={0.55} formatter={chartCompactLabel} />
               </Bar>
               <Bar dataKey="Para Compartir" fill="#ff0024" radius={[6, 6, 0, 0]}>
-                <LabelList dataKey="Para Compartir" position="top" fontSize={10} fill="#ff0024" opacity={0.75} formatter={(v: number) => v ? formatCompact(v) : ''} />
+                <LabelList dataKey="Para Compartir" position="top" fontSize={10} fill="#ff0024" opacity={0.75} formatter={chartCompactLabel} />
               </Bar>
               {hasComplementos && (
                 <Bar dataKey="Complementos" fill="#64748b" radius={[6, 6, 0, 0]}>
-                  <LabelList dataKey="Complementos" position="top" fontSize={10} fill="#64748b" opacity={0.75} formatter={(v: number) => v ? formatCompact(v) : ''} />
+                  <LabelList dataKey="Complementos" position="top" fontSize={10} fill="#64748b" opacity={0.75} formatter={chartCompactLabel} />
                 </Bar>
               )}
             </BarChart>
@@ -1155,7 +1162,12 @@ function ComparativeTypeView({ data }: { data: ComparativeData[] }) {
                                         <Tooltip
                                           cursor={{ fill: '#272121', opacity: 0.04 }}
                                           contentStyle={tooltipStyle}
-                                          formatter={(value: number) => row.label === '% Margen' ? formatPercent(value) : row.label === 'Cantidad' ? value.toString() : formatCurrency(value)}
+                                          formatter={(value: number | undefined) => {
+                                            const n = value ?? 0;
+                                            if (row.label === '% Margen') return formatPercent(n);
+                                            if (row.label === 'Cantidad') return n.toString();
+                                            return formatCurrency(n);
+                                          }}
                                         />
                                         <Bar dataKey="Personal" fill="#272121" radius={[4, 4, 0, 0]} />
                                         <Bar dataKey="Para Compartir" fill="#ff0024" radius={[4, 4, 0, 0]} />
@@ -1339,7 +1351,7 @@ function TypePanel({ title, data, accentColor, fullWidth }: { title: string, dat
                   <Pie data={pieData} innerRadius={30} outerRadius={55} paddingAngle={3} dataKey="value" strokeWidth={0}>
                     {pieData.map((_, idx) => <Cell key={idx} fill={pieColors[idx % pieColors.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -1385,7 +1397,7 @@ function TypePanel({ title, data, accentColor, fullWidth }: { title: string, dat
                   >
                     {pieData.map((_, idx) => <Cell key={idx} fill={pieColors[idx % pieColors.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -1535,10 +1547,10 @@ function ChannelView({ data }: { data: ChannelData[] }) {
               <Tooltip
                 cursor={{ fill: '#272121', opacity: 0.05 }}
                 contentStyle={tooltipStyle}
-                formatter={(value: number) => formatCurrency(value)}
+                formatter={chartCurrencyFormatter}
               />
               <Bar dataKey="sales" fill="#272121" radius={[6, 6, 0, 0]}>
-                <LabelList dataKey="sales" position="top" fontSize={10} fill="#272121" opacity={0.5} formatter={(v: number) => formatCompact(v)} />
+                <LabelList dataKey="sales" position="top" fontSize={10} fill="#272121" opacity={0.5} formatter={chartCompactLabel} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -1696,7 +1708,7 @@ function ChannelView({ data }: { data: ChannelData[] }) {
                         <Pie data={pieData} innerRadius={22} outerRadius={38} paddingAngle={3} dataKey="value" strokeWidth={0}>
                           {pieData.map((_, idx) => <Cell key={idx} fill={pieColors[idx % pieColors.length]} />)}
                         </Pie>
-                        <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                        <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -1913,7 +1925,7 @@ function ChannelDetailPanel({ channel, data, allData }: { channel: string, data:
                   >
                     {pieData.map((_, idx) => <Cell key={idx} fill={pieColors[idx % pieColors.length]} />)}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                  <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
@@ -2078,9 +2090,9 @@ function ProductView({ data }: { data: ProductRow[] }) {
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#272121" strokeOpacity={0.05} />
                 <XAxis type="number" axisLine={false} tickLine={false} fontSize={11} tick={{ fill: '#272121', opacity: 0.4 }} tickFormatter={v => formatCompact(v)} />
                 <YAxis type="category" dataKey="product_name" axisLine={false} tickLine={false} fontSize={10} tick={{ fill: '#272121', opacity: 0.6 }} width={160} />
-                <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                 <Bar dataKey="sales" fill="#272121" radius={[0, 6, 6, 0]}>
-                  <LabelList dataKey="sales" position="right" fontSize={9} fill="#272121" opacity={0.5} formatter={(v: number) => formatCompact(v)} />
+                  <LabelList dataKey="sales" position="right" fontSize={9} fill="#272121" opacity={0.5} formatter={chartCompactLabel} />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
@@ -2095,7 +2107,7 @@ function ProductView({ data }: { data: ProductRow[] }) {
                 <Pie data={byProduct.slice(0, 8).map(p => ({ name: p.product_name, value: p.sales }))} innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value" strokeWidth={0}>
                   {byProduct.slice(0, 8).map((_, i) => <Cell key={i} fill={pieColors[i % pieColors.length]} />)}
                 </Pie>
-                <Tooltip contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                <Tooltip contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -2133,9 +2145,9 @@ function ProductView({ data }: { data: ProductRow[] }) {
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#272121" strokeOpacity={0.05} />
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="product_name" axisLine={false} tickLine={false} fontSize={9} tick={{ fill: '#272121', opacity: 0.6 }} width={130} />
-                      <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                      <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                       <Bar dataKey="sales" fill="#272121" radius={[0, 6, 6, 0]}>
-                        <LabelList dataKey="sales" position="right" fontSize={9} fill="#272121" opacity={0.6} formatter={(v: number) => formatCompact(v)} />
+                        <LabelList dataKey="sales" position="right" fontSize={9} fill="#272121" opacity={0.6} formatter={chartCompactLabel} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
@@ -2153,9 +2165,9 @@ function ProductView({ data }: { data: ProductRow[] }) {
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#272121" strokeOpacity={0.05} />
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="product_name" axisLine={false} tickLine={false} fontSize={9} tick={{ fill: '#272121', opacity: 0.6 }} width={130} />
-                      <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={(value: number) => formatCurrency(value)} />
+                      <Tooltip cursor={{ fill: '#272121', opacity: 0.05 }} contentStyle={tooltipStyle} formatter={chartCurrencyFormatter} />
                       <Bar dataKey="sales" fill="#ff0024" radius={[0, 6, 6, 0]}>
-                        <LabelList dataKey="sales" position="right" fontSize={9} fill="#ff0024" opacity={0.6} formatter={(v: number) => formatCompact(v)} />
+                        <LabelList dataKey="sales" position="right" fontSize={9} fill="#ff0024" opacity={0.6} formatter={chartCompactLabel} />
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>

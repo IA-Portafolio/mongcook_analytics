@@ -126,28 +126,28 @@ interface ToteatShiftStatusResponse {
 // Maps Toteat hierarchyId to our analytics families.
 // This is the primary classification — product-level overrides below.
 
-// Canonical families: Combos, Cajas, Platos Especiales, Bowl, Otros.
-// Chow Fan / Chow Suey / Chow Mein / Arma tu Plato / Mong Express / Lo Nuevo
-// are DISHES inside "Platos Especiales", not families of their own.
+// Canonical families: Combos, Cajas, Arma tu plato, Platos Especiales, Bowl, Otros.
+// Platos mong (Chow Fan / Chow Suey / Chow Mein) live in Cajas.
+// Arma tu plato is its own family — it is not Cajas and not Platos Especiales.
 // Entradas / Bebidas / Adicionales fold into "Otros".
 export const HIERARCHY_MAP: Record<string, ProductMapping> = {
   // Otros (entradas, bebidas, adicionales)
   'AB.010': { family: 'Otros', type: 'Complemento' },
 
-  // Platos Especiales
-  'AB.020': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030040': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030050': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030055': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030060': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030070': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030075': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030080': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030085': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030090': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030100': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.030210': { family: 'Platos Especiales', type: 'Personal' },
-  'AB.110': { family: 'Platos Especiales', type: 'Personal' },
+  // Platos mong / cajas (fallback when product ID is unknown)
+  'AB.020': { family: 'Cajas', type: 'Personal' },
+  'AB.030040': { family: 'Cajas', type: 'Personal' },
+  'AB.030050': { family: 'Cajas', type: 'Personal' },
+  'AB.030055': { family: 'Cajas', type: 'Personal' },
+  'AB.030060': { family: 'Cajas', type: 'Personal' },
+  'AB.030070': { family: 'Cajas', type: 'Personal' },
+  'AB.030075': { family: 'Cajas', type: 'Personal' },
+  'AB.030080': { family: 'Cajas', type: 'Personal' },
+  'AB.030085': { family: 'Cajas', type: 'Personal' },
+  'AB.030090': { family: 'Cajas', type: 'Personal' },
+  'AB.030100': { family: 'Cajas', type: 'Personal' },
+  'AB.030210': { family: 'Cajas', type: 'Personal' },
+  'AB.110': { family: 'Arma tu plato', type: 'Personal' },
   'AB.140': { family: 'Platos Especiales', type: 'Personal' },
   'AB.250': { family: 'Platos Especiales', type: 'Personal' },
 
@@ -178,37 +178,12 @@ export const HIERARCHY_MAP: Record<string, ProductMapping> = {
 // e.g. trio/familiar/mega sizes are "Compartir" even if hierarchy says personal.
 
 export const PRODUCT_MAP: Record<string, ProductMapping> = {
-  // Platos especiales — trio/familiar/mega sizes → Compartir
-  'MON101': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON102': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON103': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON111': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON121': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON131': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON132': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON133': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON301': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON302': { family: 'Platos Especiales', type: 'Compartir' },
-  'MON321': { family: 'Platos Especiales', type: 'Compartir' },
-  'RAPP01': { family: 'Platos Especiales', type: 'Compartir' },
-  'RAPP03': { family: 'Platos Especiales', type: 'Compartir' },
-
-  // Combos para compartir items that might land in wrong hierarchy
-  'ATP01': { family: 'Combos', type: 'Compartir' },
-  'ATP04': { family: 'Combos', type: 'Compartir' },
-  'ATP06': { family: 'Combos', type: 'Compartir' },
-  'ATP10': { family: 'Combos', type: 'Compartir' },
-  'COMC02': { family: 'Combos', type: 'Compartir' },
-  'COMC04': { family: 'Combos', type: 'Compartir' },
-  'COMC06': { family: 'Combos', type: 'Compartir' },
-  'COMC08': { family: 'Combos', type: 'Compartir' },
-
   // IDs presentes en Toteat pero ausentes en "Nueva Base Toteat1.xlsx".
   // Hasta que se agreguen al Excel, los clasificamos manualmente para que
   // no caigan a "Otros" por el fallback. NO afectan cálculos de $ ni costos,
   // solo a qué familia pertenece el producto en el dashboard.
   'COMB14': { family: 'Combos', type: 'Personal' },     // Deditos de pollo (combo)
-  'prom102': { family: 'Combos', type: 'Compartir' },   // chow fan especial trio + papas
+  'prom102': { family: 'Cajas', type: 'Compartir' },    // chow fan especial trio + papas
   'RAPP05': { family: 'Bowl', type: 'Personal' },       // BOWL KUMO
   'RAPP06': { family: 'Bowl', type: 'Personal' },       // BOWL TAO
   'BEB60': { family: 'Otros', type: 'Complemento' },    // Fuze tea durazno 1.2L (probable typo de BEB600)
@@ -218,19 +193,31 @@ export const PRODUCT_MAP: Record<string, ProductMapping> = {
 // Toteat doesn't have a direct "channel" field in sales.
 // We infer from zoneName, product IDs, or comment.
 
-function detectChannel(order: ToteatOrder): string {
+export function detectChannel(order: ToteatOrder): string {
   const zone = (order.zoneName || '').toUpperCase();
   const comment = (order.comment || '').toUpperCase();
-  const table = (order.tableName || '').toUpperCase();
+  const table = String(order.tableName || '').toUpperCase();
+  const tableId = String(order.tableId ?? '').toUpperCase();
+  const payments = (order.paymentForms || []).map((form) => String(form.name || '').toUpperCase()).join(' ');
+  const haystack = `${zone} ${comment} ${table} ${tableId} ${payments}`;
 
-  // Rappi orders
-  if (zone.includes('RAPPI') || comment.includes('RAPPI') || table.includes('RAPPI')) return 'Rappi';
+  // Rappi: payment form, comment ("2476039037 Rappi"), table, or zone.
+  if (haystack.includes('RAPPI')) return 'Rappi';
 
-  // Delivery / Domicilios
-  if (zone.includes('DELIVERY') || zone.includes('DOMICILIO') || zone.includes('DESPACHO') ||
-      comment.includes('DELIVERY') || comment.includes('DOMICILIO')) return 'Delivery Propio';
+  // Own delivery / Toteat "Origen de Reserva = Telefono":
+  // comments look like "*** DELIVERY D-105 ***" and sit on Virtual tables (V-101xx).
+  if (
+    haystack.includes('DELIVERY') ||
+    haystack.includes('DOMICILIO') ||
+    haystack.includes('DESPACHO') ||
+    haystack.includes('TELEFON') ||
+    haystack.includes('TELÉFON') ||
+    table === 'VIRTUAL' ||
+    tableId.startsWith('V-')
+  ) {
+    return 'Delivery Propio';
+  }
 
-  // Default: Punto de Venta (in-store)
   return 'Punto de Venta';
 }
 
@@ -357,7 +344,7 @@ export function buildOrderCacheRows(orders: ToteatOrder[]): CachedOrderSale[] {
 
 // ── Classify a product ───────────────────────────────────────────────
 
-function classifyProduct(product: ToteatProduct, customMap?: Record<string, ProductMapping>): ProductMapping {
+export function classifyProduct(product: ToteatProduct, customMap?: Record<string, ProductMapping>): ProductMapping {
   // 1. Request-specific override takes absolute priority.
   if (customMap?.[product.id]) return customMap[product.id];
 
@@ -366,16 +353,32 @@ function classifyProduct(product: ToteatProduct, customMap?: Record<string, Prod
   //    Toteat product ID is classified here. See scripts/generate-product-map.cjs.
   if (PRODUCT_EMPAQUE_MAP[product.id]) return PRODUCT_EMPAQUE_MAP[product.id];
 
-  // 3. Legacy hand-maintained overrides (trio/familiar/mega sizes etc.).
+  // 3. Legacy hand-maintained overrides (IDs missing from the Excel catalog).
   if (PRODUCT_MAP[product.id]) return PRODUCT_MAP[product.id];
 
-  // 4. Hierarchy-based mapping (fallback when product ID is unknown).
-  if (HIERARCHY_MAP[product.hierarchyId]) return HIERARCHY_MAP[product.hierarchyId];
-
-  // 3. Fallback: try to guess from hierarchy name
+  // 4. Name-based detection for unmapped IDs (Toteat sometimes sends
+  //    spelling/casing variants that are not in the catalog).
   const hname = (product.hierarchyName || '').toLowerCase();
   const pname = (product.name || '').toLowerCase();
-  if (hname.includes('caja') || pname.includes('caja')) return { family: 'Cajas', type: 'Compartir' };
+  const isComboName = hname.includes('combo') || pname.startsWith('combo') || pname.includes('combo ');
+  if (!isComboName && (pname.includes('chow fan') || pname.includes('chow mein') || pname.includes('chop suey') || pname.includes('valenciano'))) {
+    const compartir = /trio|familiar|mega/.test(pname);
+    return { family: 'Cajas', type: compartir ? 'Compartir' : 'Personal' };
+  }
+  if (!isComboName && (pname === 'arma tu plato' || hname.includes('arma tu plato'))) {
+    return { family: 'Arma tu plato', type: 'Personal' };
+  }
+
+  // 5. Hierarchy-based mapping (fallback when product ID is unknown).
+  if (HIERARCHY_MAP[product.hierarchyId]) return HIERARCHY_MAP[product.hierarchyId];
+
+  // 6. Fallback: try to guess from hierarchy name
+  if (hname.includes('arma tu plato') || (hname.includes('arma') && !hname.includes('combo'))) {
+    return { family: 'Arma tu plato', type: 'Personal' };
+  }
+  if (hname.includes('caja') || pname.includes('caja') || hname.includes('platos mong') || hname.includes('chow')) {
+    return { family: 'Cajas', type: 'Compartir' };
+  }
   if (hname.includes('bowl') || pname.startsWith('bowl')) return { family: 'Bowl', type: 'Personal' };
   if (hname.includes('combo') && hname.includes('compartir')) return { family: 'Combos', type: 'Compartir' };
   if (hname.includes('combo') && hname.includes('personal')) return { family: 'Combos', type: 'Personal' };
@@ -383,8 +386,7 @@ function classifyProduct(product: ToteatProduct, customMap?: Record<string, Prod
   if (hname.includes('entrada') || hname.includes('bebida') || hname.includes('adicional')) {
     return { family: 'Otros', type: 'Complemento' };
   }
-  if (hname.includes('plato') || hname.includes('chow') || hname.includes('especial') ||
-      hname.includes('mong') || hname.includes('arma')) {
+  if (hname.includes('plato especial')) {
     return { family: 'Platos Especiales', type: 'Personal' };
   }
 

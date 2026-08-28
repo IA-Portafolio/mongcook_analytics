@@ -63,6 +63,14 @@ export function initializeAnalyticsSchema(database: SQLiteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_sales_channel ON sales_data(channel);
     CREATE INDEX IF NOT EXISTS idx_sales_orders_date ON sales_orders(date);
     CREATE INDEX IF NOT EXISTS idx_sales_orders_order_id_date ON sales_orders(order_id, date);
+
+    CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
+      range_key TEXT PRIMARY KEY,
+      classification_version INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
   `);
 }
 
