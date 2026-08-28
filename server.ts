@@ -3,7 +3,7 @@ import { createServer as createViteServer } from "vite";
 import { buildChannelMetrics, buildComparativeTypeMetrics, buildProductMetrics, summarizeSnapshot } from "./analytics.ts";
 import db from "./db.ts";
 import { resolveDashboardDateRange, todayDate } from "./src/lib/dashboard-range.ts";
-import { backfillToteatCache, getAutoSyncRange, loadCachedSnapshot, persistAnalyticsSnapshot, syncToteatRange } from "./toteat-cache.ts";
+import { backfillToteatCache, getAutoSyncRange, syncToteatRange } from "./toteat-cache.ts";
 import {
   clampEndDateToLastClosedShift,
   fetchToteatSalesChunked,
@@ -127,6 +127,8 @@ async function startServer() {
     const existing = analyticsSnapshotCache.get(key);
     const now = Date.now();
 
+    // Brief in-memory reuse only: the 4 metric endpoints fire in parallel and
+    // Toteat allows 3 requests/minute. This is not the SQLite store.
     if (existing?.value && now < existing.expiresAt) {
       return existing.value;
     }
@@ -135,24 +137,12 @@ async function startServer() {
       return existing.inFlight;
     }
 
-    const cached = loadCachedSnapshot(db, startDate, endDate);
-    if (cached) {
-      const ttlMs = endDate < todayDate() ? 12 * 60 * 60 * 1000 : 15 * 60 * 1000;
-      analyticsSnapshotCache.set(key, { value: cached, expiresAt: Date.now() + ttlMs, inFlight: null });
-      return cached;
-    }
-
+    console.log(`[toteat] Consultando ventas en vivo ${startDate} → ${endDate}`);
     const inFlight = importToteatSnapshot(getToteatConfig(), startDate, endDate)
       .then((snapshot) => {
-        try {
-          persistAnalyticsSnapshot(db, snapshot, startDate, endDate);
-        } catch (error: any) {
-          console.warn("[snapshot-cache] Failed to persist Toteat snapshot:", error?.message || error);
-        }
-        const ttlMs = endDate < todayDate() ? 12 * 60 * 60 * 1000 : 15 * 60 * 1000;
         analyticsSnapshotCache.set(key, {
           value: snapshot,
-          expiresAt: Date.now() + ttlMs,
+          expiresAt: Date.now() + 60 * 1000,
           inFlight: null,
         });
         return snapshot;

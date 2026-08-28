@@ -152,13 +152,10 @@ export default function App() {
   const hasData = summary && (summary.totalSales || summary.totalQuantity);
   const availableFamilies = [...new Set([...compData.map(d => d.family), ...channelData.map(d => d.family)])].sort();
 
-  const hasDataRef = useRef(false);
-  hasDataRef.current = Boolean(hasData);
-
-  const fetchData = useCallback(async () => {
-    // Keep the current dashboard on screen if we already have data.
-    // Switching to Excel and back must not unmount the view or refetch from Toteat.
-    if (!hasDataRef.current) setLoading(true);
+  const fetchData = useCallback(async (opts?: { silent?: boolean }) => {
+    // First load / filter change: show spinner. Returning from Excel: keep
+    // the current view and refresh from Toteat in the background.
+    if (!opts?.silent) setLoading(true);
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.set('startDate', filters.startDate);
@@ -192,6 +189,25 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  const lastSilentRefreshAt = useRef(0);
+  useEffect(() => {
+    const refreshFromToteat = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastSilentRefreshAt.current < 15_000) return;
+      lastSilentRefreshAt.current = now;
+      fetchData({ silent: true });
+    };
+
+    window.addEventListener('focus', refreshFromToteat);
+    document.addEventListener('visibilitychange', refreshFromToteat);
+
+    return () => {
+      window.removeEventListener('focus', refreshFromToteat);
+      document.removeEventListener('visibilitychange', refreshFromToteat);
+    };
   }, [fetchData]);
 
   const seedData = async () => {
