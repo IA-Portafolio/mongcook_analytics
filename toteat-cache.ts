@@ -9,6 +9,13 @@ export interface SyncRangeOptions {
   startDate: string;
   endDate: string;
   clearExisting?: boolean;
+  /**
+   * Let an empty Toteat response wipe the cached window. Off by default: upstream
+   * answers `ok: true` with zero orders both when a day really had no sales and when
+   * the POS simply has not reported yet, so a blank must never delete good rows on
+   * its own. Only a manual re-import that intends to remove orders should set this.
+   */
+  allowEmptyClear?: boolean;
   customMapping?: Record<string, ProductMapping>;
 }
 
@@ -19,6 +26,17 @@ export interface ToteatSyncResult {
   orderRows: number;
   channels: string[];
   families: string[];
+  /** True when an empty upstream response was ignored to protect cached rows. */
+  emptyResponseIgnored: boolean;
+  /** Cached rows in the window that the ignored empty response would have deleted. */
+  preservedRows: number;
+  /** Latest sale date held in the cache after the sync, or null when it is empty. */
+  maxCachedDate: string | null;
+}
+
+export interface AutoSyncReport {
+  level: "info" | "warn";
+  message: string;
 }
 
 function todayDate() {
@@ -59,6 +77,28 @@ export function getCacheBounds(database: SQLiteDatabase) {
   return {
     minDate: row?.minDate || null,
     maxDate: row?.maxDate || null,
+  };
+}
+
+export function countCachedRowsInRange(
+  database: SQLiteDatabase,
+  startDate: string,
+  endDate: string,
+) {
+  const row = database
+    .prepare(
+      `
+        SELECT
+          (SELECT COUNT(*) FROM sales_data WHERE date BETWEEN ? AND ?) as products,
+          (SELECT COUNT(*) FROM sales_orders WHERE date BETWEEN ? AND ?) as orders
+      `
+    )
+    .get(startDate, endDate, startDate, endDate) as { products: number; orders: number };
+
+  return {
+    products: row?.products || 0,
+    orders: row?.orders || 0,
+    total: (row?.products || 0) + (row?.orders || 0),
   };
 }
 
@@ -176,36 +216,12 @@ export function rememberSnapshotRange(
   `).run(snapshotRangeKey(startDate, endDate, version), version, startDate, endDate, new Date().toISOString());
 }
 
-export function loadCachedSnapshot(
+/** Read every cached row for a date window, shaped exactly like a live Toteat snapshot. */
+export function readSnapshotFromDb(
   database: SQLiteDatabase,
   startDate: string,
   endDate: string,
-  options: { allowStaleCurrentMonth?: boolean } = {},
-): ToteatImportSnapshot | null {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
-      range_key TEXT PRIMARY KEY,
-      classification_version INTEGER NOT NULL,
-      start_date TEXT NOT NULL,
-      end_date TEXT NOT NULL,
-      fetched_at TEXT NOT NULL
-    )
-  `);
-
-  const meta = database.prepare(
-    `SELECT classification_version, fetched_at FROM snapshot_cache_meta WHERE range_key = ?`,
-  ).get(snapshotRangeKey(startDate, endDate)) as { classification_version: number; fetched_at: string } | undefined;
-
-  if (!meta || meta.classification_version !== SNAPSHOT_CLASSIFICATION_VERSION) {
-    return null;
-  }
-
-  const isClosedRange = endDate < todayDate();
-  if (!isClosedRange && !options.allowStaleCurrentMonth) {
-    const ageMs = Date.now() - Date.parse(meta.fetched_at);
-    if (!Number.isFinite(ageMs) || ageMs > 15 * 60 * 1000) return null;
-  }
-
+): ToteatImportSnapshot {
   const productRows = database.prepare(
     `
       SELECT
@@ -241,9 +257,44 @@ export function loadCachedSnapshot(
     `,
   ).all(startDate, endDate) as CachedOrderSale[];
 
-  if (productRows.length === 0 && orderRows.length === 0) return null;
 
   return { productRows, orderRows };
+}
+
+export function loadCachedSnapshot(
+  database: SQLiteDatabase,
+  startDate: string,
+  endDate: string,
+  options: { allowStaleCurrentMonth?: boolean } = {},
+): ToteatImportSnapshot | null {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
+      range_key TEXT PRIMARY KEY,
+      classification_version INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    )
+  `);
+
+  const meta = database.prepare(
+    `SELECT classification_version, fetched_at FROM snapshot_cache_meta WHERE range_key = ?`,
+  ).get(snapshotRangeKey(startDate, endDate)) as { classification_version: number; fetched_at: string } | undefined;
+
+  if (!meta || meta.classification_version !== SNAPSHOT_CLASSIFICATION_VERSION) {
+    return null;
+  }
+
+  const isClosedRange = endDate < todayDate();
+  if (!isClosedRange && !options.allowStaleCurrentMonth) {
+    const ageMs = Date.now() - Date.parse(meta.fetched_at);
+    if (!Number.isFinite(ageMs) || ageMs > 15 * 60 * 1000) return null;
+  }
+
+  const snapshot = readSnapshotFromDb(database, startDate, endDate);
+  if (snapshot.productRows.length === 0 && snapshot.orderRows.length === 0) return null;
+
+  return snapshot;
 }
 
 export function persistAnalyticsSnapshot(
@@ -272,7 +323,18 @@ export async function syncToteatRange(
   );
   const snapshot = filterSnapshotToDateRange(rawSnapshot, options.startDate, options.endDate);
 
-  replaceSalesCacheRange(database, snapshot, options);
+  const isEmpty = snapshot.productRows.length === 0 && snapshot.orderRows.length === 0;
+  const cached = countCachedRowsInRange(database, options.startDate, options.endDate);
+
+  // Toteat answers `ok: true` with zero orders when the POS has not reported a shift
+  // yet, so clearing on a blank would silently delete real sales. Keep what we have
+  // and let the caller surface it instead.
+  const emptyResponseIgnored = isEmpty && options.clearExisting !== false
+    && !options.allowEmptyClear && cached.total > 0;
+
+  if (!emptyResponseIgnored) {
+    replaceSalesCacheRange(database, snapshot, options);
+  }
 
   return {
     startDate: options.startDate,
@@ -281,6 +343,54 @@ export async function syncToteatRange(
     orderRows: snapshot.orderRows.length,
     channels: [...new Set(snapshot.productRows.map((row) => row.channel))],
     families: [...new Set(snapshot.productRows.map((row) => row.family))],
+    emptyResponseIgnored,
+    preservedRows: emptyResponseIgnored ? cached.total : 0,
+    maxCachedDate: getCacheBounds(database).maxDate,
+  };
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.max(0, Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000));
+}
+
+/**
+ * Turn a sync result into a log line that tells the truth. The old "Done. N rows
+ * imported" was printed even when the window had not moved in days, which is how a
+ * ten-day upstream outage went unnoticed.
+ */
+export function buildAutoSyncReport(
+  result: ToteatSyncResult,
+  previousMaxDate: string | null,
+  today = todayDate(),
+): AutoSyncReport {
+  const window = `${result.startDate} \u2192 ${result.endDate}`;
+  const freshness = result.maxCachedDate
+    ? `${result.maxCachedDate} (${daysBetween(result.maxCachedDate, today)} days old)`
+    : "none (cache is empty)";
+
+  if (result.emptyResponseIgnored) {
+    return {
+      level: "warn",
+      message:
+        `Toteat returned no orders for ${window}. Kept ${result.preservedRows} cached rows `
+        + `instead of clearing the window. Latest cached sale is still ${freshness}.`,
+    };
+  }
+
+  if (result.maxCachedDate && result.maxCachedDate === previousMaxDate) {
+    return {
+      level: "warn",
+      message:
+        `No new data. Latest cached sale is still ${freshness}. Re-imported `
+        + `${result.productRows} product rows / ${result.orderRows} orders for ${window}.`,
+    };
+  }
+
+  return {
+    level: "info",
+    message:
+      `Done. ${result.productRows} product rows / ${result.orderRows} orders imported `
+      + `for ${window}. Latest cached sale now ${freshness}.`,
   };
 }
 

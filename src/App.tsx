@@ -128,6 +128,10 @@ function ToastContainer({ toasts }: { toasts: ToastData[] }) {
 
 // ── Main App ─────────────────────────────────────────────────────────
 
+function formatShortDate(date: string) {
+  return new Date(`${date}T12:00:00`).toLocaleDateString('es-CL', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 export default function App() {
   const defaultFilters = buildDefaultFilterState();
   const [activeTab, setActiveTab] = useState<'summary' | 'comparative1' | 'comparative2' | 'byProduct'>('summary');
@@ -136,6 +140,7 @@ export default function App() {
   const [channelData, setChannelData] = useState<ChannelData[]>([]);
   const [productData, setProductData] = useState<ProductRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataRange, setDataRange] = useState<{ minDate: string | null; maxDate: string | null } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -163,12 +168,21 @@ export default function App() {
       if (filters.families.length > 0) params.set('families', filters.families.join(','));
       const qs = params.toString() ? `?${params.toString()}` : '';
 
-      const [sumRes, compRes, chanRes, prodRes] = await Promise.all([
+      const [sumRes, compRes, chanRes, prodRes, statusRes] = await Promise.all([
         fetch(`/api/metrics/summary${qs}`),
         fetch(`/api/metrics/comparative-type${qs}`),
         fetch(`/api/metrics/comparative-channel${qs}`),
         fetch(`/api/metrics/by-product${qs}`),
+        fetch('/api/sync/status'),
       ]);
+
+      if (![sumRes, compRes, chanRes, prodRes].every((res) => res.ok)) {
+        throw new Error('Metrics request failed');
+      }
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        setDataRange({ minDate: status.minDate ?? null, maxDate: status.maxDate ?? null });
+      }
 
       const sum = await sumRes.json();
       const comp = await compRes.json();
@@ -277,6 +291,11 @@ export default function App() {
             {hasData ? "Datos cargados" : "Sin datos"}
           </span>
         </div>
+        {dataRange?.maxDate && (
+          <p className="text-[11px] opacity-40">
+            Ventas registradas hasta {formatShortDate(dataRange.maxDate)}
+          </p>
+        )}
         <img src="/ia-portafolio-logotype.png" alt="IA Portafolio" className="h-5 opacity-40" />
       </div>
     </>
@@ -479,8 +498,13 @@ export default function App() {
             <div>
               <h3 className="font-bold text-2xl mb-2">Sin datos disponibles</h3>
               <p className="text-sm opacity-50 max-w-sm">
-                No hay datos disponibles para mostrar.
+                No hay ventas registradas en el período seleccionado.
               </p>
+              {dataRange?.minDate && dataRange?.maxDate && (
+                <p className="text-sm opacity-50 max-w-sm mt-2">
+                  Hay datos entre el {formatShortDate(dataRange.minDate)} y el {formatShortDate(dataRange.maxDate)}.
+                </p>
+              )}
             </div>
           </motion.div>
         ) : (

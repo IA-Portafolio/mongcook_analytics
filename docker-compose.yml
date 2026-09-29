@@ -6,10 +6,12 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - DB_PATH=/app/data/moongcook.db
     env_file:
       - .env
     volumes:
-      - ./moongcook.db:/app/moongcook.db
+      # Named volume: survives deploys (the checkout's moongcook.db is only the first-boot seed).
+      - mongcook-data:/app/data
     networks:
       - traefik-public
     labels:
@@ -18,6 +20,9 @@ services:
       - "traefik.http.routers.mongcook.entrypoints=websecure"
       - "traefik.http.routers.mongcook.tls.certresolver=letsencrypt"
       - "traefik.http.services.mongcook.loadbalancer.server.port=3000"
+
+volumes:
+  mongcook-data:
 
 networks:
   traefik-public:

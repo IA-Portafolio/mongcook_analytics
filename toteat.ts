@@ -409,6 +409,30 @@ function toToteatDate(date: string): string {
   return date.replace(/-/g, '');
 }
 
+// ── Global request gate ──────────────────────────────────────────────
+// Toteat allows 3 requests/minute per token, shared by every caller in this
+// process (dashboard, background sync, diagnostics). Serializing all calls
+// through one gate keeps us under the limit instead of retrying 429s until
+// the request gives up.
+const DEFAULT_REQUEST_GAP_MS = 21_000;
+let requestGate: Promise<void> = Promise.resolve();
+let lastRequestAt = 0;
+
+function requestGapMs() {
+  const configured = Number(process.env.TOTEAT_MIN_REQUEST_GAP_MS);
+  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_REQUEST_GAP_MS;
+}
+
+function toteatFetch(url: string): Promise<Response> {
+  const turn = requestGate.then(async () => {
+    const waitMs = lastRequestAt + requestGapMs() - Date.now();
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    lastRequestAt = Date.now();
+  });
+  requestGate = turn;
+  return turn.then(() => fetch(url, { method: 'GET' }));
+}
+
 export async function fetchToteatSales(
   config: ToteatConfig,
   startDate: string, // YYYY-MM-DD
@@ -428,7 +452,7 @@ export async function fetchToteatSales(
 
   while (attempts < 5) {
     try {
-      response = await fetch(url.toString(), { method: 'GET' });
+      response = await toteatFetch(url.toString());
     } catch (error) {
       lastError = error;
       const waitMs = 5000 * (attempts + 1);
@@ -477,7 +501,7 @@ export async function fetchToteatShiftStatus(config: ToteatConfig): Promise<Tote
   url.searchParams.set('xiu', config.xiu);
   url.searchParams.set('xapitoken', config.xapitoken);
 
-  const response = await fetch(url.toString(), { method: "GET" });
+  const response = await toteatFetch(url.toString());
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(`Toteat shiftstatus error ${response.status}: ${response.statusText}. ${body}`);
@@ -514,20 +538,10 @@ export async function fetchToteatSalesChunked(
   const start = new Date(startDate);
   const end = new Date(endDate);
   const allOrders: ToteatOrder[] = [];
-  let windowStartedAt = Date.now();
-  let requestsInWindow = 0;
 
+  // Pacing is handled by the global request gate in toteatFetch.
   let chunkStart = new Date(start);
   while (chunkStart <= end) {
-    if (requestsInWindow >= 3) {
-      const elapsedMs = Date.now() - windowStartedAt;
-      if (elapsedMs < 60_000) {
-        await new Promise((resolve) => setTimeout(resolve, 60_000 - elapsedMs));
-      }
-      windowStartedAt = Date.now();
-      requestsInWindow = 0;
-    }
-
     const chunkEnd = new Date(chunkStart);
     chunkEnd.setDate(chunkEnd.getDate() + 14); // 15 days max
     if (chunkEnd > end) chunkEnd.setTime(end.getTime());
@@ -537,7 +551,6 @@ export async function fetchToteatSalesChunked(
 
     const orders = await fetchToteatSales(config, startStr, endStr);
     allOrders.push(...orders);
-    requestsInWindow += 1;
 
     // Move to next chunk
     chunkStart = new Date(chunkEnd);

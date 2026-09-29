@@ -1,7 +1,29 @@
 import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 
 function openDatabase(filename: string) {
   return new Database(filename);
+}
+
+/**
+ * Production keeps the database on a persistent volume (DB_PATH) so deploys never
+ * overwrite accumulated history. On the very first boot the volume is empty, so we
+ * seed it from the snapshot baked into the image.
+ */
+function resolveDatabasePath() {
+  const target = process.env.DB_PATH || "moongcook.db";
+  const seed = path.resolve("moongcook.db");
+
+  if (path.resolve(target) !== seed && !fs.existsSync(target)) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (fs.existsSync(seed)) {
+      fs.copyFileSync(seed, target);
+      console.log(`[db] Seeded ${target} from ${seed}`);
+    }
+  }
+
+  return target;
 }
 
 export type SQLiteDatabase = ReturnType<typeof openDatabase>;
@@ -63,6 +85,11 @@ export function initializeAnalyticsSchema(database: SQLiteDatabase) {
     CREATE INDEX IF NOT EXISTS idx_sales_channel ON sales_data(channel);
     CREATE INDEX IF NOT EXISTS idx_sales_orders_date ON sales_orders(date);
     CREATE INDEX IF NOT EXISTS idx_sales_orders_order_id_date ON sales_orders(order_id, date);
+
+    CREATE TABLE IF NOT EXISTS sync_state (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
 
     CREATE TABLE IF NOT EXISTS snapshot_cache_meta (
       range_key TEXT PRIMARY KEY,
@@ -204,7 +231,8 @@ export function querySummaryMetrics(database: SQLiteDatabase, filters: SummaryFi
   return coerceSummaryRow(orderRow, quantityRow?.totalQuantity || 0);
 }
 
-const db = openDatabase("moongcook.db");
+const db = openDatabase(resolveDatabasePath());
+db.pragma("journal_mode = WAL");
 
 initializeAnalyticsSchema(db);
 runAnalyticsMigrations(db);

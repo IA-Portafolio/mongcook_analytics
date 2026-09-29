@@ -3,18 +3,21 @@ import { createServer as createViteServer } from "vite";
 import { buildChannelMetrics, buildComparativeTypeMetrics, buildProductMetrics, summarizeSnapshot } from "./analytics.ts";
 import db from "./db.ts";
 import { resolveDashboardDateRange, todayDate } from "./src/lib/dashboard-range.ts";
-import { backfillToteatCache, getAutoSyncRange, syncToteatRange } from "./toteat-cache.ts";
+import { backfillToteatCache, readSnapshotFromDb, syncToteatRange } from "./toteat-cache.ts";
+import { createToteatSyncEngine } from "./toteat-sync.ts";
 import {
-  clampEndDateToLastClosedShift,
   fetchToteatSalesChunked,
-  fetchToteatShiftStatus,
   HIERARCHY_MAP,
   importToteatSnapshot,
   PRODUCT_MAP,
   type ProductMapping,
   type ToteatImportSnapshot,
-  type ToteatShiftStatus,
 } from "./toteat.ts";
+
+process.on("unhandledRejection", (reason) => {
+  // A failed background promise must never take the whole dashboard down.
+  console.error("[process] Unhandled rejection:", reason);
+});
 
 async function startServer() {
   const app = express();
@@ -69,128 +72,41 @@ async function startServer() {
     return familyList.length > 0 ? familyList : undefined;
   }
 
-  let shiftStatusCache: { value: ToteatShiftStatus | null; expiresAt: number; inFlight: Promise<ToteatShiftStatus | null> | null } =
-    { value: null, expiresAt: 0, inFlight: null };
+  // Dashboard metrics are served from SQLite only. The background sync engine
+  // (below) keeps it filled with new and historical Toteat sales, so a request
+  // never waits on Toteat's 3 requests/minute limit.
+  type MetricsBuilder = (
+    snapshot: ToteatImportSnapshot,
+    families: string[] | undefined,
+    query: express.Request["query"],
+  ) => unknown;
 
-  async function getCachedShiftStatus() {
-    const now = Date.now();
-    if (shiftStatusCache.value && now < shiftStatusCache.expiresAt) {
-      return shiftStatusCache.value;
-    }
-
-    if (shiftStatusCache.inFlight) {
-      return shiftStatusCache.inFlight;
-    }
-
-    shiftStatusCache.inFlight = fetchToteatShiftStatus(getToteatConfig())
-      .then((value) => {
-        shiftStatusCache.value = value;
-        shiftStatusCache.expiresAt = Date.now() + 5 * 60 * 1000;
-        shiftStatusCache.inFlight = null;
-        return value;
-      })
-      .catch((error) => {
-        console.warn("[shiftstatus] Failed to refresh Toteat shift status:", error?.message || error);
-        shiftStatusCache.inFlight = null;
-        return shiftStatusCache.value;
-      });
-
-    return shiftStatusCache.inFlight;
-  }
-
-  async function resolveEffectiveDateRange(startDate?: string, endDate?: string) {
-    const requestedRange = resolveDashboardDateRange(
-      { startDate, endDate },
-      todayDate(),
-    );
-    const requestedStartDate = requestedRange.startDate;
-    const requestedEndDate = requestedRange.endDate;
-
-    if (requestedEndDate < todayDate()) {
-      return { startDate: requestedStartDate, endDate: requestedEndDate };
-    }
-
-    const shiftStatus = await getCachedShiftStatus();
-    return {
-      startDate: requestedStartDate,
-      endDate: clampEndDateToLastClosedShift(requestedEndDate, shiftStatus),
-    };
-  }
-
-  const analyticsSnapshotCache = new Map<
-    string,
-    { value: ToteatImportSnapshot | null; expiresAt: number; inFlight: Promise<ToteatImportSnapshot> | null }
-  >();
-
-  async function getAnalyticsSnapshot(startDate: string, endDate: string) {
-    const key = `${startDate}:${endDate}`;
-    const existing = analyticsSnapshotCache.get(key);
-    const now = Date.now();
-
-    // Brief in-memory reuse only: the 4 metric endpoints fire in parallel and
-    // Toteat allows 3 requests/minute. This is not the SQLite store.
-    if (existing?.value && now < existing.expiresAt) {
-      return existing.value;
-    }
-
-    if (existing?.inFlight) {
-      return existing.inFlight;
-    }
-
-    console.log(`[toteat] Consultando ventas en vivo ${startDate} → ${endDate}`);
-    const inFlight = importToteatSnapshot(getToteatConfig(), startDate, endDate)
-      .then((snapshot) => {
-        analyticsSnapshotCache.set(key, {
-          value: snapshot,
-          expiresAt: Date.now() + 60 * 1000,
-          inFlight: null,
-        });
-        return snapshot;
-      })
-      .catch((error) => {
-        analyticsSnapshotCache.delete(key);
-        throw error;
-      });
-
-    analyticsSnapshotCache.set(key, {
-      value: existing?.value || null,
-      expiresAt: existing?.expiresAt || 0,
-      inFlight,
+  function metricsRoute(path: string, build: MetricsBuilder) {
+    app.get(path, (req, res) => {
+      try {
+        const { startDate, endDate, families } = req.query;
+        const range = resolveDashboardDateRange(
+          { startDate: startDate as string | undefined, endDate: endDate as string | undefined },
+          todayDate(),
+        );
+        const snapshot = readSnapshotFromDb(db, range.startDate, range.endDate);
+        res.json(build(snapshot, parseFamiliesParam(families), req.query));
+      } catch (error) {
+        console.error(`[metrics] ${path} failed:`, error);
+        res.status(500).json({ error: "No se pudieron calcular las métricas" });
+      }
     });
-
-    return inFlight;
   }
 
-  // Get Summary Metrics
-  app.get("/api/metrics/summary", async (req, res) => {
-    const { startDate, endDate, families } = req.query;
-    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
-    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
-    res.json(summarizeSnapshot(snapshot, parseFamiliesParam(families)));
-  });
+  metricsRoute("/api/metrics/summary", (snapshot, families) => summarizeSnapshot(snapshot, families));
+  metricsRoute("/api/metrics/comparative-type", (snapshot, families) => buildComparativeTypeMetrics(snapshot, families));
+  metricsRoute("/api/metrics/comparative-channel", (snapshot, families) => buildChannelMetrics(snapshot, families));
+  metricsRoute("/api/metrics/by-product", (snapshot, families, query) =>
+    buildProductMetrics(snapshot, families, query.family as string | undefined));
 
-  // Get Comparative 1: Personal vs No Personal
-  app.get("/api/metrics/comparative-type", async (req, res) => {
-    const { startDate, endDate, families } = req.query;
-    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
-    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
-    res.json(buildComparativeTypeMetrics(snapshot, parseFamiliesParam(families)));
-  });
-
-  // Get Comparative 2: By Channel
-  app.get("/api/metrics/comparative-channel", async (req, res) => {
-    const { startDate, endDate, families } = req.query;
-    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
-    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
-    res.json(buildChannelMetrics(snapshot, parseFamiliesParam(families)));
-  });
-
-  // Product-level metrics
-  app.get("/api/metrics/by-product", async (req, res) => {
-    const { startDate, endDate, families, family } = req.query;
-    const range = await resolveEffectiveDateRange(startDate as string | undefined, endDate as string | undefined);
-    const snapshot = await getAnalyticsSnapshot(range.startDate, range.endDate);
-    res.json(buildProductMetrics(snapshot, parseFamiliesParam(families), family as string | undefined));
+  // What the DB currently holds and what the sync engine is doing.
+  app.get("/api/sync/status", (_req, res) => {
+    res.json(syncEngine.status());
   });
 
   // Mock Upload Endpoint (Simulation for MVP)
@@ -293,6 +209,13 @@ async function startServer() {
       xapitoken: process.env.TOTEAT_API_TOKEN || 'JMjUI5JpDl1VMDCifkwzcscrLqa5ppBT',
     };
   }
+
+  const syncEngine = createToteatSyncEngine({
+    database: db,
+    getConfig: () => getToteatConfig(),
+    incrementalIntervalMs: Number(process.env.TOTEAT_SYNC_INTERVAL_MIN || 30) * 60 * 1000,
+    backfillFloorDate: process.env.TOTEAT_BACKFILL_FLOOR || "2020-01-01",
+  });
 
   // Import sales from Toteat API → classify → insert into DB
   app.post("/api/toteat/import", async (req, res) => {
@@ -468,36 +391,9 @@ async function startServer() {
     app.use(express.static("dist"));
   }
 
-  // ── Auto-sync from Toteat ─────────────────────────────────────────
-  // Keeps the local DB in sync with Toteat without manual intervention.
-  // Strategy: find the last date already imported, then re-import from
-  // (lastDate - 2 days) up to today. The 2-day overlap covers late-arriving
-  // orders that closed after a previous sync. clearExisting is scoped to
-  // exactly that window so older data is never touched.
-  async function autoSyncToteat() {
-    try {
-      const { startDate, endDate } = getAutoSyncRange(db);
-
-      if (startDate > endDate) return;
-
-      console.log(`[auto-sync] Importing Toteat ${startDate} → ${endDate}`);
-      const config = getToteatConfig();
-      const result = await syncToteatRange(db, config, {
-        startDate,
-        endDate,
-        clearExisting: true,
-      });
-      console.log(`[auto-sync] Done. ${result.productRows} product rows / ${result.orderRows} orders imported.`);
-    } catch (err: any) {
-      console.error('[auto-sync] Failed:', err.message || err);
-    }
-  }
-
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
-    // Let the first interactive dashboard requests go through before background sync competes for rate limit.
-    setTimeout(autoSyncToteat, 5 * 60 * 1000);
-    setInterval(autoSyncToteat, 6 * 60 * 60 * 1000);
+    syncEngine.start();
   });
 }
 
