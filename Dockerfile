@@ -1,4 +1,4 @@
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
 COPY package.json package-lock.json ./
